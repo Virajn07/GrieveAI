@@ -1,0 +1,8 @@
+{
+  "local_backend": "baseline",
+  "baseline_classifier": "tfidf_logistic_regression_plus_ridge_priority",
+  "research_classifier": "google/muril-base-cased with PEFT LoRA and category/subcategory/priority heads",
+  "max_length": 128,
+  "seed": 42,
+  "note": "Configuration describes implementation, not a claim of model evaluation quality."
+}

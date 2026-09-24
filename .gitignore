@@ -1,0 +1,54 @@
+# Python and test tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+.venv_test/
+
+# Secrets and local environment (keep only the placeholder template)
+.env
+.env.*
+!.env.example
+*.key
+
+# Local databases, logs, runtime output and caches
+*.db
+*.sqlite
+*.sqlite3
+**/instance/**
+!**/instance/.gitkeep
+*.log
+logs/
+outputs/
+tmp/
+temp/
+.cache/
+
+# Raw/private input data must never be published
+data/raw/**
+!data/raw/.gitkeep
+
+# Generated model artifacts, including pickle/joblib files
+checkpoints/**
+!checkpoints/.gitkeep
+*.pt
+*.bin
+*.safetensors
+*.joblib
+*.pkl
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+{
+  "status": "proposed_demo_mappings_not_validated_by_vcet",
+  "mapping": {
+    "Academics": "Academic Affairs Office",
+    "Examinations": "Examination Cell",
+    "Fees_Accounts": "Accounts Office",
+    "IT_Library": "IT Services / Library",
+    "Infrastructure": "Facilities & Maintenance",
+    "Transport": "Transport Committee",
+    "Canteen": "Canteen Management"
+  }
+}
