@@ -1,10 +1,23 @@
 """SQLAlchemy models for grievances and an auditable state-transition log."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from flask_sqlalchemy import SQLAlchemy
 
 
 db = SQLAlchemy()
+
+
+def utc_now() -> datetime:
+    """Return an aware UTC timestamp for new application data."""
+    return datetime.now(timezone.utc)
+
+
+def as_utc(value: datetime) -> datetime:
+    """Normalize database-naive or aware timestamps to aware UTC."""
+    if value.tzinfo is None:
+        # Existing SQLite DateTime columns round-trip UTC without tzinfo.
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class Grievance(db.Model):
@@ -36,7 +49,7 @@ class Grievance(db.Model):
     duplicate_method = db.Column(db.String(40))
     llm_summary = db.Column(db.Text)
     summary_provider = db.Column(db.String(32))
-    submitted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    submitted_at = db.Column(db.DateTime, default=utc_now, nullable=False, index=True)
     sla_deadline = db.Column(db.DateTime)
     resolved_at = db.Column(db.DateTime)
     summary_factuality = db.Column(db.String(24))
@@ -56,4 +69,4 @@ class AuditLog(db.Model):
     action = db.Column(db.String(50), nullable=False)
     actor = db.Column(db.String(80), nullable=False)
     detail = db.Column(db.Text)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp = db.Column(db.DateTime, default=utc_now, nullable=False, index=True)

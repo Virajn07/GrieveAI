@@ -76,8 +76,13 @@ class GrieveAIClassifier(nn.Module):
         self.subcategory_head = nn.Linear(hidden_size, num_subcategories)
         self.priority_head = nn.Linear(hidden_size, 1)
 
-    def forward(self, input_ids, attention_mask):
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+    def forward(self, input_ids, attention_mask, token_type_ids=None, **_ignored_extra_tokenizer_fields):
+        # Preserve BERT-style segment IDs when supplied. Ignore unrelated
+        # tokenizer metadata so the model remains compatible with tokenizer output.
+        encoder_inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
+        if token_type_ids is not None:
+            encoder_inputs["token_type_ids"] = token_type_ids
+        outputs = self.encoder(**encoder_inputs)
         if getattr(outputs, "pooler_output", None) is not None:
             pooled = outputs.pooler_output
         else:

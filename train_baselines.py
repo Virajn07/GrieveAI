@@ -1,24 +1,17 @@
-"""Compare the keyword-rule and TF-IDF + SVM baselines on a leakage-aware split."""
+"""Compare keyword and TF-IDF + SVM baselines on the model's fixed split."""
 
-import hashlib
+import argparse
 import json
 from pathlib import Path
 
 import pandas as pd
 from sklearn.metrics import f1_score, mean_absolute_error, recall_score
-from sklearn.model_selection import StratifiedGroupKFold
 
 from src.baselines import KeywordRuleClassifier, TfidfSVMClassifier
+from src.data_splits import has_group_leakage, make_splits, validate_taxonomy_labels
 
 DATA = Path("data/processed/grievances_synthetic.csv")
 TAXONOMY = Path("config/taxonomy.json")
-
-
-def group_key(row):
-    if str(row["duplicate_of"]).strip() and str(row["duplicate_of"]) != "nan":
-        return str(row["duplicate_of"])
-    normalized = " ".join(str(row["text"]).lower().split())
-    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
 
 
 def evaluate(true_df, preds):
@@ -34,28 +27,40 @@ def evaluate(true_df, preds):
     }
 
 
+def evaluate_pair(frame, keyword, svm):
+    keyword_predictions = [(*keyword.predict(text), 3.0) for text in frame["text"]]
+    svm_predictions = [svm.predict(text) for text in frame["text"]]
+    return {
+        "keyword_rules": evaluate(frame, keyword_predictions),
+        "tfidf_svm": evaluate(frame, svm_predictions),
+    }
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
     df = pd.read_csv(DATA)
-    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
-    df["group"] = df.apply(group_key, axis=1)
-    splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
-    train_idx, val_idx = next(splitter.split(df, df["category"], df["group"]))
-    train_df, val_df = df.iloc[train_idx], df.iloc[val_idx]
+    taxonomy_json = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    validate_taxonomy_labels(df, taxonomy_json)
+    taxonomy = {"categories": taxonomy_json["categories"]}
+    train_df, val_df, test_df = make_splits(df, seed=args.seed)
 
     keyword = KeywordRuleClassifier(taxonomy)
-    kw_preds = [(lambda x: (*x, 3.0))(keyword.predict(t)) for t in val_df["text"]]
-
     svm = TfidfSVMClassifier(taxonomy).fit(
         train_df["text"], train_df["category"], train_df["subcategory"], train_df["priority"]
     )
-    svm_preds = [svm.predict(t) for t in val_df["text"]]
-
     results = {
         "dataset_kind": "synthetic_demo_pipeline_validation",
         "research_claim": "not_vcet_pilot_results",
-        "split": {"train_rows": len(train_df), "validation_rows": len(val_df), "duplicate_group_leakage": False},
-        "keyword_rules": evaluate(val_df, kw_preds),
-        "tfidf_svm": evaluate(val_df, svm_preds),
+        "split": {
+            "train_rows": len(train_df),
+            "validation_rows": len(val_df),
+            "test_rows": len(test_df),
+            "duplicate_group_leakage": has_group_leakage((train_df, val_df, test_df)),
+        },
+        "validation": evaluate_pair(val_df, keyword, svm),
+        "test": evaluate_pair(test_df, keyword, svm),
         "routing_accuracy": None,
         "routing_accuracy_note": "Unavailable: no validated gold department column in this dataset.",
         "override_rate": None,

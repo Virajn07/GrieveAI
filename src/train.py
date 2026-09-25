@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.data_splits import has_group_leakage, make_splits, validate_taxonomy_labels
 from src.model import FocalLoss, GrieveAIClassifier, MURIL_CHECKPOINT, load_taxonomy
 
 
@@ -53,46 +54,45 @@ class GrievanceDataset(Dataset):
             self.texts[idx], truncation=True, padding="max_length",
             max_length=self.max_length, return_tensors="pt"
         )
-        return {
+        item = {
             "input_ids": enc["input_ids"].squeeze(0),
             "attention_mask": enc["attention_mask"].squeeze(0),
             "category_label": torch.tensor(self.cat_to_idx[self.categories[idx]], dtype=torch.long),
             "subcategory_label": torch.tensor(self.subcat_to_idx[self.subcategories[idx]], dtype=torch.long),
             "priority_label": torch.tensor(self.priorities[idx], dtype=torch.float),
         }
-
-
-def make_splits(df):
-    work = df.copy()
-    # Original rows and generated duplicates share one group.
-    work["group"] = work["duplicate_of"].fillna(work["id"]).astype(str)
-    outer = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
-    train_val_idx, test_idx = next(outer.split(work, work["category"], work["group"]))
-    train_val = work.iloc[train_val_idx]
-    inner = StratifiedGroupKFold(n_splits=4, shuffle=True, random_state=43)
-    train_rel, val_rel = next(inner.split(train_val, train_val["category"], train_val["group"]))
-    return tuple(part.drop(columns="group") for part in (
-        train_val.iloc[train_rel], train_val.iloc[val_rel], work.iloc[test_idx]
-    ))
+        if "token_type_ids" in enc:
+            item["token_type_ids"] = enc["token_type_ids"].squeeze(0)
+        return item
 
 
 def evaluate(model, loader, device, taxonomy):
     model.eval()
-    y_cat, p_cat, y_sub, p_sub, y_pri, p_pri, high_true, high_pred = [], [], [], [], [], [], [], []
+    y_cat, p_cat, y_sub, p_sub, y_sub_oracle, p_sub_oracle = [], [], [], [], [], []
+    y_pri, p_pri, high_true, high_pred = [], [], [], []
     with torch.no_grad():
         for batch in loader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            out = model(input_ids, attention_mask)
+            token_type_ids = batch.get("token_type_ids")
+            if token_type_ids is not None:
+                token_type_ids = token_type_ids.to(device)
+            out = model(input_ids, attention_mask, token_type_ids=token_type_ids)
             cat = out["category_logits"].argmax(-1)
             masked_sub = torch.stack([
                 model.mask_subcategory_logits(out["subcategory_logits"][i], int(cat[i]), taxonomy)
                 for i in range(len(cat))
             ])
             sub = masked_sub.argmax(-1)
+            oracle_masked_sub = torch.stack([
+                model.mask_subcategory_logits(out["subcategory_logits"][i], int(batch["category_label"][i]), taxonomy)
+                for i in range(len(batch["category_label"]))
+            ])
+            oracle_sub = oracle_masked_sub.argmax(-1)
             pri = out["priority_pred"]
             y_cat.extend(batch["category_label"].tolist()); p_cat.extend(cat.cpu().tolist())
             y_sub.extend(batch["subcategory_label"].tolist()); p_sub.extend(sub.cpu().tolist())
+            y_sub_oracle.extend(batch["subcategory_label"].tolist()); p_sub_oracle.extend(oracle_sub.cpu().tolist())
             y_pri.extend(batch["priority_label"].tolist()); p_pri.extend(pri.cpu().tolist())
             high_true.extend((batch["priority_label"] >= 4).int().tolist())
             high_pred.extend((pri >= 4).int().tolist())
@@ -100,6 +100,7 @@ def evaluate(model, loader, device, taxonomy):
         "dataset_kind": "training_dataset_metrics_require_data_provenance_review",
         "category_macro_f1": f1_score(y_cat, p_cat, average="macro"),
         "subcategory_macro_f1": f1_score(y_sub, p_sub, average="macro"),
+        "subcategory_macro_f1_given_gold_category": f1_score(y_sub_oracle, p_sub_oracle, average="macro"),
         "priority_mae": mean_absolute_error(y_pri, p_pri),
         "priority_recall_high": recall_score(high_true, high_pred, zero_division=0),
         "routing_accuracy": None,
@@ -137,7 +138,9 @@ def main(args):
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns: {sorted(missing)}")
-    train_df, val_df, test_df = make_splits(df)
+    taxonomy_json = json.loads(Path(args.taxonomy).read_text(encoding="utf-8"))
+    validate_taxonomy_labels(df, taxonomy_json)
+    train_df, val_df, test_df = make_splits(df, seed=args.seed)
     print(f"Device: {device} | Train: {len(train_df)} | Val: {len(val_df)} | Test: {len(test_df)}")
 
     tokenizer = AutoTokenizer.from_pretrained(MURIL_CHECKPOINT)
@@ -152,8 +155,10 @@ def main(args):
     model.to(device)
     print(f"Trainable parameters: {sum(n for _, n in model.trainable_parameters()):,}")
 
-    cat_loss = FocalLoss(gamma=2.0)
-    sub_loss = FocalLoss(gamma=2.0)
+    # The synthetic category and subcategory labels are near-balanced; ordinary
+    # cross-entropy (gamma=0) is the controlled default, with focal loss opt-in.
+    cat_loss = FocalLoss(gamma=args.focal_gamma)
+    sub_loss = FocalLoss(gamma=args.focal_gamma)
     pri_loss = torch.nn.HuberLoss(delta=1.0)
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=0.01
@@ -174,8 +179,15 @@ def main(args):
             pri_labels = batch["priority_label"].to(device)
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", enabled=(device.type == "cuda")):
-                out = model(input_ids, attention_mask)
-                loss = cat_loss(out["category_logits"], cat_labels) + sub_loss(out["subcategory_logits"], sub_labels) + 0.5 * pri_loss(out["priority_pred"], pri_labels)
+                token_type_ids = batch.get("token_type_ids")
+                if token_type_ids is not None:
+                    token_type_ids = token_type_ids.to(device)
+                out = model(input_ids, attention_mask, token_type_ids=token_type_ids)
+                conditional_sub_logits = torch.stack([
+                    model.mask_subcategory_logits(out["subcategory_logits"][i], int(cat_labels[i]), taxonomy)
+                    for i in range(len(cat_labels))
+                ])
+                loss = cat_loss(out["category_logits"], cat_labels) + sub_loss(conditional_sub_logits, sub_labels) + 0.5 * pri_loss(out["priority_pred"], pri_labels)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -200,8 +212,36 @@ def main(args):
     test_metrics["research_claim"] = "not_vcet_pilot_results" if test_metrics["dataset_kind"].startswith("synthetic") else "verify_provenance_before_reporting"
     best_metrics["validation"] = best_metrics.copy()
     best_metrics["test"] = test_metrics
-    best_metrics["split"] = {"train_rows": len(train_df), "validation_rows": len(val_df), "test_rows": len(test_df), "duplicate_group_leakage": False}
-    save_checkpoint(model, tokenizer, taxonomy, args.output_dir, best_metrics, vars(args))
+    best_metrics["split"] = {"train_rows": len(train_df), "validation_rows": len(val_df), "test_rows": len(test_df), "duplicate_group_leakage": has_group_leakage((train_df, val_df, test_df))}
+    experiment_config = vars(args).copy()
+    import hashlib
+    import platform
+    from importlib.metadata import PackageNotFoundError, version
+    experiment_config.update({
+        "model_identifier": MURIL_CHECKPOINT,
+        "tokenizer_identifier": MURIL_CHECKPOINT,
+        "dataset_sha256": hashlib.sha256(Path(args.data).read_bytes()).hexdigest(),
+        "taxonomy_sha256": hashlib.sha256(Path(args.taxonomy).read_bytes()).hexdigest(),
+        "python_version": platform.python_version(),
+    })
+    for package in ("torch", "transformers", "peft", "scikit-learn", "pandas"):
+        try:
+            experiment_config[f"{package}_version"] = version(package)
+        except PackageNotFoundError:
+            experiment_config[f"{package}_version"] = None
+    import subprocess
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
+    experiment_config["git_commit"] = revision.stdout.strip() if revision.returncode == 0 else None
+    status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=False)
+    experiment_config["git_working_tree_dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
+    lora = model.encoder.peft_config["default"]
+    experiment_config["lora_config"] = {
+        "r": lora.r,
+        "alpha": lora.lora_alpha,
+        "dropout": lora.lora_dropout,
+        "target_modules": sorted(str(module) for module in lora.target_modules),
+    }
+    save_checkpoint(model, tokenizer, taxonomy, args.output_dir, best_metrics, experiment_config)
     if args.smoke_test:
         from src.model import MuRILInference
         reloaded = MuRILInference(args.output_dir, args.taxonomy, device=device)
@@ -219,6 +259,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--focal_gamma", type=float, default=0.0, help="Use >0 only when justified by measured class imbalance")
     parser.add_argument("--output_dir", default="checkpoints/muril_lora/run1")
     parser.add_argument("--smoke_test", action="store_true", help="Run one epoch and reload the saved checkpoint for an inference check")
     main(parser.parse_args())

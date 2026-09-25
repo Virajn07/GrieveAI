@@ -70,6 +70,7 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertGreaterEqual(payload["priority"], 1)
         self.assertLessEqual(payload["priority"], 5)
         self.assertEqual(payload["script"], "latin")
+        self.assertTrue(payload["explanation"], "submission should expose the classifier explanation")
 
         ack = payload["ack_number"]
         inbox = self.client.get("/?status=review")

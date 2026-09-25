@@ -14,7 +14,7 @@ def create_app(test_config=None):
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
     from src.configuration import load_threshold_settings
     configured_thresholds = load_threshold_settings()
-    db_path = Path(app.instance_path) / "grieveai.db"
+    db_path = Path(__file__).resolve().parent / "instance" / "grieveai.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     database_url = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{db_path}"
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url

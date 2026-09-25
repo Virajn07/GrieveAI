@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 from pathlib import Path
 import os
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session, url_for
 
-from app.models_db import AuditLog, Grievance, db
+from app.models_db import AuditLog, Grievance, as_utc, db, utc_now
 from app.services import _audit, get_classifier, submit_grievance as submit_grievance_service
 
 bp = Blueprint("main", __name__)
@@ -26,10 +25,11 @@ STATUS_TRANSITIONS = {
 def sla_status(grievance, at=None) -> str:
     if not grievance.sla_deadline:
         return "unavailable"
-    at = at or datetime.utcnow()
+    at = as_utc(at) if at else utc_now()
+    deadline = as_utc(grievance.sla_deadline)
     if grievance.resolved_at:
-        return "met" if grievance.resolved_at <= grievance.sla_deadline else "overdue"
-    return "overdue" if at > grievance.sla_deadline else "on_track"
+        return "met" if as_utc(grievance.resolved_at) <= deadline else "overdue"
+    return "overdue" if at > deadline else "on_track"
 
 
 def _require_admin():
@@ -89,7 +89,7 @@ def index():
         departments = json.loads(Path(os.getenv("DEPARTMENTS_CONFIG", "config/departments.json")).read_text(encoding="utf-8")).get("mapping", {})
     except (OSError, ValueError):
         departments = {}
-    return render_template("dashboard.html", grievances=grievances, counts=counts, departments=sorted(set(departments.values())), selected_department=department, selected_status=status, now=datetime.utcnow())
+    return render_template("dashboard.html", grievances=grievances, counts=counts, departments=sorted(set(departments.values())), selected_department=department, selected_status=status, now=utc_now())
 
 
 @bp.route("/submit", methods=["GET", "POST"])
@@ -163,10 +163,10 @@ def api_grievance(ack_number):
         "subcategory": grievance.subcategory,
         "priority": grievance.priority,
         "routed_department": grievance.routed_department,
-        "submitted_at": grievance.submitted_at.isoformat(),
-        "sla_deadline": grievance.sla_deadline.isoformat() if grievance.sla_deadline else None,
+        "submitted_at": as_utc(grievance.submitted_at).isoformat(),
+        "sla_deadline": as_utc(grievance.sla_deadline).isoformat() if grievance.sla_deadline else None,
         "sla_status": sla_status(grievance),
-        "resolved_at": grievance.resolved_at.isoformat() if grievance.resolved_at else None,
+        "resolved_at": as_utc(grievance.resolved_at).isoformat() if grievance.resolved_at else None,
     })
 
 
@@ -195,7 +195,7 @@ def update_status(ack_number):
         return jsonify({"error": "a department must be assigned before work starts"}), 409
     grievance.status = status
     if status == "resolved":
-        grievance.resolved_at = datetime.utcnow()
+        grievance.resolved_at = utc_now()
     _audit(grievance.id, "status_change", actor, f"{old} -> {status}; {note}".strip("; "))
     db.session.commit()
     return jsonify({"ack_number": ack_number, "old_status": old, "status": status})
@@ -228,7 +228,7 @@ def override_route(ack_number):
     old = grievance.routed_department
     old_status = grievance.status
     grievance.routed_department = department
-    grievance.routing_at = grievance.routing_at or datetime.utcnow()
+    grievance.routing_at = grievance.routing_at or utc_now()
     grievance.manual_review = False
     if old_status == "submitted":
         grievance.status = "routed"
@@ -283,7 +283,7 @@ def override_classification(ack_number):
     old_status = grievance.status
     grievance.category, grievance.subcategory, grievance.priority = category, subcategory, priority
     grievance.routed_department = new_department
-    grievance.routing_at = grievance.routing_at or datetime.utcnow()
+    grievance.routing_at = grievance.routing_at or utc_now()
     grievance.manual_review = False
     if old_status == "submitted":
         grievance.status = "routed"
@@ -317,10 +317,10 @@ def review_summary(ack_number):
     grievance.summary_factuality = factuality
     grievance.summary_review_note = note
     grievance.summary_reviewed_by = actor
-    grievance.summary_reviewed_at = datetime.utcnow()
+    grievance.summary_reviewed_at = utc_now()
     _audit(grievance.id, "summary_review", actor, f"factuality={factuality}; {note}".strip("; "))
     db.session.commit()
-    return jsonify({"ack_number": ack_number, "factuality": factuality, "reviewed_at": grievance.summary_reviewed_at.isoformat()})
+    return jsonify({"ack_number": ack_number, "factuality": factuality, "reviewed_at": as_utc(grievance.summary_reviewed_at).isoformat()})
 
 
 @bp.route("/api/v1/grievances/<ack_number>/explanation")
@@ -369,7 +369,7 @@ def review_queue():
     if denied:
         return denied
     rows = Grievance.query.filter_by(manual_review=True, status="submitted").order_by(Grievance.submitted_at.asc()).all()
-    return jsonify({"items": [{"ack_number": g.ack_number, "category": g.category, "subcategory": g.subcategory, "confidence": g.confidence, "submitted_at": g.submitted_at.isoformat()} for g in rows]})
+    return jsonify({"items": [{"ack_number": g.ack_number, "category": g.category, "subcategory": g.subcategory, "confidence": g.confidence, "submitted_at": as_utc(g.submitted_at).isoformat()} for g in rows]})
 
 
 @bp.route("/api/v1/admin/metrics")

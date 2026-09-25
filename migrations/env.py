@@ -15,6 +15,7 @@ target_metadata = db.metadata
 
 load_dotenv()
 default_db = (Path(__file__).resolve().parents[1] / "app" / "instance" / "grieveai.db").resolve()
+default_db.parent.mkdir(parents=True, exist_ok=True)
 database_url = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{default_db}"
 
 

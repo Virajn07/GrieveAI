@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -10,7 +10,7 @@ import uuid
 
 from flask import current_app
 
-from app.models_db import AuditLog, Grievance, db
+from app.models_db import AuditLog, Grievance, db, utc_now
 from src.baseline_classifier import BaselineGrievanceClassifier
 from src.language_id import redact_pii
 from src.llm_report import summarize_and_route
@@ -72,12 +72,16 @@ def submit_grievance(raw_text: str):
     language_info = analysis["language"]
     language = language_info["language"]
     prediction = analysis["prediction"]
-    explanation = []
+    try:
+        explanation = clf.explain(text)
+    except Exception:
+        current_app.logger.exception("Could not generate submission explanation")
+        explanation = []
 
     recent_rows = (
         Grievance.query.filter(
             Grievance.category == prediction["category"],
-            Grievance.submitted_at >= datetime.utcnow() - timedelta(days=30),
+            Grievance.submitted_at >= utc_now() - timedelta(days=30),
         )
         .with_entities(Grievance.id, Grievance.text)
         .order_by(Grievance.submitted_at.desc())
@@ -98,7 +102,7 @@ def submit_grievance(raw_text: str):
     department = None if manual_review else llm_result["recommended_department"]
     status = "submitted" if manual_review else "routed"
 
-    now = datetime.utcnow()
+    now = utc_now()
     ack_number = f"GRV-{now:%Y%m%d}-{uuid.uuid4().hex[:12].upper()}"
     grievance = Grievance(
         ack_number=ack_number,
