@@ -1,54 +1,178 @@
-# Python and test tooling
+# ============================================================
+# GrieveAI - Git Ignore
+# ============================================================
+
+# ------------------------------------------------------------
+# Python
+# ------------------------------------------------------------
 __pycache__/
 *.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-build/
-dist/
+*$py.class
+*.so
 
 # Virtual environments
 .venv/
 venv/
-.venv_test/
+env/
+ENV/
+env.bak/
+venv.bak/
 
-# Secrets and local environment (keep only the placeholder template)
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# ------------------------------------------------------------
+# Environment variables / secrets
+# ------------------------------------------------------------
 .env
 .env.*
 !.env.example
-*.key
 
-# Local databases, logs, runtime output and caches
+# API keys / credentials
+*.pem
+*.key
+secrets/
+credentials/
+service_account*.json
+
+# ------------------------------------------------------------
+# IDE / Editor
+# ------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+.idea/
+*.swp
+*.swo
+*~
+
+# ------------------------------------------------------------
+# Operating system
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ------------------------------------------------------------
+# Jupyter / Colab
+# ------------------------------------------------------------
+.ipynb_checkpoints/
+
+# ------------------------------------------------------------
+# Machine Learning model checkpoints
+# ------------------------------------------------------------
+# Large trained model files should NOT be committed to Git.
+checkpoints/**/*.zip
+checkpoints/**/*.safetensors
+checkpoints/**/*.bin
+checkpoints/**/*.pt
+checkpoints/**/*.pth
+checkpoints/**/*.ckpt
+checkpoints/**/*.onnx
+
+# Hugging Face cache
+.huggingface/
+huggingface_cache/
+transformers_cache/
+
+# Local experiment outputs
+runs/
+wandb/
+mlruns/
+
+# ------------------------------------------------------------
+# Large datasets
+# ------------------------------------------------------------
+# Keep large/local datasets out of Git.
+data/*.csv
+data/*.tsv
+data/*.xlsx
+data/*.xls
+data/*.parquet
+data/*.jsonl
+
+# Synthetic stress-test datasets
+*60000*.csv
+*60000*.json
+*stress*.csv
+*stress*.json
+
+# ------------------------------------------------------------
+# Local databases
+# ------------------------------------------------------------
 *.db
 *.sqlite
 *.sqlite3
-**/instance/**
-!**/instance/.gitkeep
+
+# PostgreSQL local dumps / backups
+*.dump
+*.backup
+
+# ------------------------------------------------------------
+# Logs
+# ------------------------------------------------------------
 *.log
 logs/
-outputs/
+
+# ------------------------------------------------------------
+# Generated reports / exports
+# ------------------------------------------------------------
+reports/generated/
+reports/output/
+exports/
 tmp/
 temp/
+
+# Generated PDFs
+*.generated.pdf
+
+# ------------------------------------------------------------
+# Flask
+# ------------------------------------------------------------
+instance/
+
+# ------------------------------------------------------------
+# Node / frontend (if frontend tooling is added later)
+# ------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+.next/
 .cache/
 
-# Raw/private input data must never be published
-data/raw/**
-!data/raw/.gitkeep
+# ------------------------------------------------------------
+# Local model / data backups
+# ------------------------------------------------------------
+backups/
+local_models/
+local_data/
 
-# Generated model artifacts, including pickle/joblib files
-checkpoints/**
-!checkpoints/.gitkeep
-*.pt
-*.bin
-*.safetensors
-*.joblib
-*.pkl
-
-# Editors and operating systems
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
+# ------------------------------------------------------------
+# OS / temporary files
+# ------------------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
