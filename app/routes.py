@@ -10,6 +10,7 @@ from flask import Blueprint, current_app, jsonify, redirect, render_template, re
 
 from app.models_db import AuditLog, Grievance, as_utc, db, utc_now
 from app.services import _audit, get_classifier, submit_grievance as submit_grievance_service
+from src.language_id import redact_pii
 
 bp = Blueprint("main", __name__)
 
@@ -315,8 +316,8 @@ def review_summary(ack_number):
         return jsonify({"error": "actor and note must be strings"}), 400
     actor, note = actor_value.strip(), note_value.strip()
     grievance.summary_factuality = factuality
-    grievance.summary_review_note = note
-    grievance.summary_reviewed_by = actor
+    grievance.summary_review_note = redact_pii(note)
+    grievance.summary_reviewed_by = redact_pii(actor)
     grievance.summary_reviewed_at = utc_now()
     _audit(grievance.id, "summary_review", actor, f"factuality={factuality}; {note}".strip("; "))
     db.session.commit()
@@ -329,6 +330,8 @@ def grievance_explanation(ack_number):
     if denied:
         return denied
     grievance = Grievance.query.filter_by(ack_number=ack_number).first_or_404()
+    if grievance.explanation is not None:
+        return jsonify({"available": True, "features": grievance.explanation})
     try:
         explanation = get_classifier().explain(grievance.text)
     except Exception:

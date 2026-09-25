@@ -113,6 +113,7 @@ def submit_grievance(raw_text: str):
         category=prediction["category"],
         subcategory=prediction["subcategory"],
         priority=prediction["priority"],
+        explanation=explanation,
         predicted_category=prediction["category"],
         predicted_subcategory=prediction["subcategory"],
         predicted_priority=prediction["priority"],

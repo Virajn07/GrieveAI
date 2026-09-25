@@ -78,6 +78,7 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertIn(ack, inbox.get_data(as_text=True))
         with self.app.app_context():
             row = Grievance.query.filter_by(ack_number=ack).one()
+            self.assertEqual(row.explanation, payload["explanation"])
             self.assertNotIn("9876543210", row.text)
             self.assertNotIn("student@example.edu", row.text)
             self.assertIsNotNone(row.duplicate_method)
@@ -120,15 +121,32 @@ class PipelineSmokeTests(unittest.TestCase):
         }, headers=headers)
         self.assertEqual(bad_labels.status_code, 400)
         summary_review = self.client.post("/api/v1/grievances/" + ack + "/summary-review", json={
-            "factuality": "partially_factual", "note": "reviewed; contact alice@example.edu", "actor": "smoke-test"
+            "factuality": "partially_factual", "note": "reviewed; contact alice@example.edu", "actor": "admin@example.edu"
         }, headers=headers)
         self.assertEqual(summary_review.status_code, 200)
         explanation = self.client.get("/api/v1/grievances/" + ack + "/explanation", headers=headers)
         self.assertTrue(explanation.get_json()["available"])
+        self.assertEqual(explanation.get_json()["features"], payload["explanation"])
         with self.app.app_context():
+            row = Grievance.query.filter_by(ack_number=ack).one()
+            self.assertEqual(row.predicted_category, payload["category"])
+            self.assertEqual(row.predicted_subcategory, payload["subcategory"])
+            self.assertEqual(row.predicted_priority, payload["priority"])
+            self.assertNotEqual(row.category, row.predicted_category)
+            self.assertEqual(row.model_department, "IT Services / Library")
+            self.assertNotIn("9876543210", str(row.explanation))
+            second_row = Grievance.query.filter_by(ack_number=second.get_json()["ack_number"]).one()
+            self.assertEqual(second_row.duplicate_of_id, row.id)
+            self.assertIsNotNone(second_row.duplicate_similarity)
+            self.assertIsNotNone(row.sla_deadline)
+            index_names = {index["name"] for index in db.inspect(db.engine).get_indexes("grievances")}
+            expected_indexes = {"ix_grievances_routed_department", "ix_grievances_category", "ix_grievances_priority", "ix_grievances_sla_deadline", "ix_grievances_duplicate_of_id"}
+            self.assertTrue(expected_indexes.issubset(index_names))
             self.assertTrue(AuditLog.query.filter_by(action="classification_override").count())
             event = AuditLog.query.filter_by(action="summary_review").one()
             self.assertNotIn("alice@example.edu", event.detail)
+            self.assertNotIn("alice@example.edu", row.summary_review_note)
+            self.assertNotIn("admin@example.edu", row.summary_reviewed_by)
         self.assertEqual(self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "submitted"}, headers=headers).status_code, 409)
         metrics = self.client.get("/api/v1/admin/metrics", headers=headers).get_json()
         self.assertIsNone(metrics["routing_accuracy"])
