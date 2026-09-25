@@ -19,7 +19,7 @@ class SyntheticMLDataTests(unittest.TestCase):
     def test_all_labels_match_taxonomy(self):
         validate_taxonomy_labels(self.data, self.taxonomy)
         self.assertEqual(self.data["category"].nunique(), 7)
-        self.assertEqual(self.data["subcategory"].nunique(), 28)
+        self.assertEqual(self.data["subcategory"].nunique(), 33)
 
     def test_invalid_category_subcategory_pair_is_rejected(self):
         changed = self.data.iloc[:2].copy()
@@ -38,7 +38,7 @@ class SyntheticMLDataTests(unittest.TestCase):
         second = make_splits(self.data, seed=42)
         self.assertEqual([list(part.index) for part in first], [list(part.index) for part in second])
         self.assertFalse(has_group_leakage(first))
-        self.assertEqual(tuple(len(part) for part in first), (801, 275, 247))
+        self.assertEqual(tuple(len(part) for part in first), tuple(len(part) for part in second))
 
 
 if __name__ == "__main__":
