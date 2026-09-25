@@ -34,9 +34,15 @@ Mean training loss for the canonical epoch was 4.3969. The checkpoint saved and 
 - A full-precision one-epoch comparison had zero non-finite gradient batches and reproduced the collapse and nearly identical losses. Thus AMP overflow is a real isolated issue but is not the main cause.
 - A diagnostic with task-head LR 1e-3 and LoRA LR 2e-4 (FP32) improved priority MAE, but category F1 remained 0.02978 on validation and subcategory F1 0.00158. It did not support changing the shared-head LR as a sufficient fix.
 
+## Follow-up representation diagnostics
+
+- A frozen MuRIL linear probe trained on the 801-row training split yielded pooler and CLS category Macro-F1 of 0.03061 validation / 0.02337 test. Masked-mean pooling was higher but still weak at 0.14804 / 0.13040.
+- A separate one-epoch masked-mean pooling ablation used the same seed, split, optimizer, learning rate, losses and batch size, with a separate checkpoint directory `/content/GrieveAI/checkpoints/ablation_mean_pooling/`. It produced category Macro-F1 0.03941 validation / 0.03002 test; subcategory Macro-F1 0.00158 / 0.00123; gold-parent subcategory Macro-F1 0.11207 / 0.10352; priority MAE 2.40982 / 2.40759; high-priority recall 0. The checkpoint reloaded successfully.
+- The pooling probe suggests some distinction in token-average features, but the full ablation did not improve category F1 and remained near-random. Pooling is therefore not a sufficient root cause and was not changed in the repository.
+
 ## Decision
 
-The controlled one-epoch run is not learning the classification tasks sensibly and is far below the TF-IDF + SVM synthetic baseline. No three-epoch run was started. Mapping, mask, forward pass, gradients, and checkpoint reload checks did not reveal a label-pipeline defect. The available evidence rules out the isolated final AMP skip and a too-low task-head LR as sufficient explanations, but does not establish a single root cause for the flat category/child losses. No speculative model or architecture change was made. Next, instrument category/subcategory head updates and log per-task training accuracy, logits, and optimizer deltas, then run a preregistered optimizer/objective diagnostic before any longer training.
+The controlled one-epoch run is not learning the classification tasks sensibly and is far below the TF-IDF + SVM synthetic baseline. No three-epoch run was started. Mapping, mask, forward pass, gradients, and checkpoint reload checks did not reveal a label-pipeline defect. The available evidence rules out taxonomy/index mismatch, inference reload, AMP overflow, a too-low task-head LR, and pooling alone as sufficient explanations. The best-supported diagnosis is that this MuRIL + LoRA representation/training setup is failing to form category-discriminative features on this synthetic corpus: the category predictions collapse despite valid labels, masks, gradients and substantial parameter updates, while frozen linear probes are also weak. The exact cause within that representation/adaptation path remains unresolved. No speculative model or architecture change was made. Next, instrument category/subcategory head updates and per-task logits/accuracy by batch, then run a preregistered optimizer/objective diagnostic before any longer training.
 
 ## Runtime warnings
 
