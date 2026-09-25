@@ -187,7 +187,7 @@ def main(args):
                     model.mask_subcategory_logits(out["subcategory_logits"][i], int(cat_labels[i]), taxonomy)
                     for i in range(len(cat_labels))
                 ])
-                loss = cat_loss(out["category_logits"], cat_labels) + sub_loss(conditional_sub_logits, sub_labels) + 0.5 * pri_loss(out["priority_pred"], pri_labels)
+                loss = cat_loss(out["category_logits"], cat_labels) + sub_loss(conditional_sub_logits, sub_labels) + 0.1 * pri_loss(out["priority_pred"], pri_labels)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
