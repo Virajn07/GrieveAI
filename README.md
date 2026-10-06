@@ -15,6 +15,27 @@ The system is being developed as a case study for the **VCET Student Grievance R
 
 ---
 
+## Local setup
+
+Use Python 3.10 or newer. From the repository root, create and activate a
+virtual environment, then install `requirements-local.txt`. Place the provided
+IndicBERT Run 1 archive at the path described above and extract it into the
+repository root so its files land under `checkpoints/indicbert_lora/run1/`.
+Copy `.env.example` to `.env`, set a private `ADMIN_TOKEN` and `SECRET_KEY`, and
+keep `MODEL_BACKEND=indicbert`. The first inference downloads the public base
+model if it is not already cached; GPU is used when available, otherwise CPU.
+
+Start the local app with `python -m app.app`. Check model and database readiness
+at `/api/v1/health`. A direct model check is:
+
+```powershell
+python -c "from src.inference import predict_grievance; print(predict_grievance('Sir meri attendance 68% hai aur teacher ne mujhe exam ke liye allow nahi kiya.'))"
+```
+
+Run the test suite with `python -m unittest discover -s tests -v`. Tests do not
+require an API key; OpenRouter behavior is mocked. Set `MODEL_BACKEND=baseline`
+only to explicitly select TF-IDF for development or comparison.
+
 ## Project Objective
 
 The goal of GrieveAI is not simply to classify a grievance.
@@ -137,20 +158,42 @@ The architecture contains:
 
 Subcategory prediction is constrained according to the selected category.
 
+### Runtime and checkpoint setup
+
+`src/indicbert_inference.py` loads the trained Run 1 adapter and task heads.
+The supplied project ZIP contains the checkpoint archive at
+`checkpoints/archives/grieveai_indicbert_v2_run1.zip`; large checkpoint files
+are excluded from Git by repository policy. Extract that archive into
+`checkpoints/indicbert_lora/run1/`, preserving its `adapter/`, `tokenizer/`,
+`heads.pt`, `taxonomy.json`, and `metrics.json` structure. The adapter archive
+does not include the base transformer weights: the first inference needs
+`ai4bharat/IndicBERTv2-MLM-only` available in the Hugging Face cache or network.
+
+The Flask default is `MODEL_BACKEND=indicbert`. A missing or incompatible model
+returns an explicit load error and degraded health status; it never silently
+switches to TF-IDF. Set `MODEL_BACKEND=baseline` only when you intentionally want
+the TF-IDF + Logistic Regression baseline. The MuRIL + LoRA implementation is
+retained as a secondary experiment (`MODEL_BACKEND=muril`).
+
+The Run 1 checkpoint was trained with the project’s 7-category/33-subcategory
+taxonomy, the saved tokenizer, 128-token truncation, attention-mask mean
+pooling, LoRA rank 8/alpha 16/dropout 0.1 on query/value projections, and three
+classification/regression heads. Inference checks the checkpoint taxonomy
+against `config/taxonomy.json` and masks subcategories to the predicted parent.
+The configured 0.70 confidence threshold is an initial demo setting, not a
+scientifically calibrated optimum.
+
 ---
 
 # Model Experiments
 
-The project has evaluated multiple approaches.
-
-| Approach | Category Macro-F1 | Subcategory Macro-F1 |
-|---|---:|---:|
-| TF-IDF + Logistic Regression | 86.4% | 69.5% |
-| MuRIL + LoRA | 98.6% | 30.5% |
-| MuRIL category + TF-IDF subcategory | 98.6% | 69.6% |
-| IndicBERT v2 + LoRA | 100.0% | 91.2% |
-
-The IndicBERT result above comes from the synthetic development/test dataset and should not be interpreted as VCET pilot performance.
+Presentation-ready results, exact train/validation/test splits, current
+baseline comparisons, language-wise evaluation, limitations, and a reproducible
+IndicBERT evaluation command are documented in
+[`docs/PRESENTATION_METRICS.md`](docs/PRESENTATION_METRICS.md). All available
+results are from synthetic data; they are not VCET pilot performance. Earlier
+notebook comparison figures use different or incompletely identified runs and
+must not be combined as an apples-to-apples model ranking.
 
 ---
 
@@ -210,11 +253,13 @@ Keeping these experiments allows the final study to compare classical and transf
 
 ---
 
-# Planned Explainability
+# On-demand Explainability
 
 GrieveAI is intended to provide explanations for classification decisions.
 
-The planned approach uses SHAP-based token attribution so that administrators can inspect which parts of a grievance contributed to a prediction.
+Administrators can request SHAP token attribution for the classifier selected
+by `MODEL_BACKEND`. Explanations are generated on demand, so normal submission
+does not pay the SHAP computation cost.
 
 The goal is to preserve the original language/script of the grievance where practical.
 
@@ -222,7 +267,8 @@ The goal is to preserve the original language/script of the grievance where prac
 
 # Duplicate and Recurring Grievance Detection
 
-The system is intended to identify semantically similar grievances.
+The system identifies similar grievances and stores duplicate candidates and
+recurring-cluster IDs with the ticket.
 
 This allows multiple individual complaints to be grouped into recurring institutional issues.
 
@@ -248,7 +294,9 @@ An LLM is intended for tasks such as:
 - Action recommendations
 - Natural-language summaries
 
-The intended architecture uses an OpenRouter-compatible API with an open-weight LLM.
+The optional OpenRouter-compatible layer returns validated structured analysis
+when configured. A deterministic fallback keeps submissions working without a
+key or network access.
 
 PII redaction will occur before sensitive grievance content is sent to an external LLM service.
 
@@ -258,14 +306,14 @@ LLM recommendations are advisory and remain subject to human review.
 
 # Backend and Application
 
-Planned backend:
+Backend:
 
 - Python
 - Flask
 - Flask-SQLAlchemy
 - PostgreSQL
 
-Planned application components:
+Application components:
 
 - Student grievance submission
 - Grievance processing pipeline
@@ -285,7 +333,8 @@ Planned application components:
 
 # Database
 
-PostgreSQL is planned as the primary production database.
+SQLite is the local default; PostgreSQL is available through `DATABASE_URL` and
+Alembic migrations.
 
 The database will store structured grievance information such as:
 
@@ -309,7 +358,10 @@ The trained ML model itself is stored separately from PostgreSQL.
 
 # Model Deployment Concept
 
-The trained IndicBERT model will be stored locally with the application.
+The selected model checkpoint is stored separately from PostgreSQL and loaded
+by the inference module. IndicBERT v2 + LoRA is the runtime default; the
+TF-IDF model is available as an explicit baseline, and MuRIL remains an optional
+research backend.
 
 Conceptually:
 
@@ -317,7 +369,7 @@ Conceptually:
        ↓
     Flask application
        ↓
-    Local IndicBERT model
+    Configured local inference model
        ↓
     Classification
        ↓

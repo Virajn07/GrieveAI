@@ -1,7 +1,8 @@
 {
-  "local_backend": "baseline",
-  "baseline_classifier": "tfidf_logistic_regression_plus_ridge_priority",
-  "research_classifier": "google/muril-base-cased with PEFT LoRA and category/subcategory/priority heads",
+  "local_backend": "indicbert",
+  "primary_classifier": "ai4bharat/IndicBERTv2-MLM-only with PEFT LoRA and category/subcategory/priority heads",
+  "baseline_classifier": "TF-IDF + Logistic Regression with Ridge priority regression",
+  "secondary_experiment": "google/muril-base-cased with PEFT LoRA",
   "max_length": 128,
   "seed": 42,
   "note": "Configuration describes implementation, not a claim of model evaluation quality."

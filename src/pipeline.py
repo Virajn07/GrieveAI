@@ -15,8 +15,10 @@ def analyze_grievance(raw_text: str, classifier: Any, confidence_threshold: floa
     takes precedence; otherwise a validation-calibrated model threshold is
     used. This service makes no database or Flask calls.
     """
+    # Detect from the submitted text before identifier redaction, then only
+    # pass/store the redacted text. Redaction preserves Hindi/Hinglish content.
+    language = detect_language_details(raw_text)
     text = redact_pii(raw_text)
-    language = detect_language_details(text)
     prediction = classifier.predict(text)
     threshold = confidence_threshold
     if threshold is None:

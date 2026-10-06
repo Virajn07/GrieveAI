@@ -34,6 +34,7 @@ class BaselineGrievanceClassifier:
         self.is_fitted = False
         self.default_confidence_threshold = load_threshold_settings()["confidence_threshold"]
         self.confidence_threshold = self.default_confidence_threshold
+        self.model_version = "tfidf_baseline_unversioned"
 
     def fit(self, texts: Iterable[str], categories, subcategories, priorities):
         X = self.vectorizer.fit_transform(texts)
@@ -75,6 +76,7 @@ class BaselineGrievanceClassifier:
             "priority_raw": round(priority_raw, 3),
             "confidence": round(confidence, 3),
             "subcategory_confidence": round(sub_confidence, 3),
+            "model_version": self.model_version,
         }
 
     def explain(self, text: str, top_k: int = 8):
@@ -124,7 +126,10 @@ class BaselineGrievanceClassifier:
         joblib.dump(self.subcategory_clf, os.path.join(path, "subcategory_clf.joblib"))
         joblib.dump(self.priority_reg, os.path.join(path, "priority_reg.joblib"))
         with open(os.path.join(path, "metadata.json"), "w", encoding="utf-8") as f:
-            json.dump({"confidence_threshold": self.confidence_threshold}, f, indent=2)
+            json.dump({
+                "model_version": self.model_version,
+                "confidence_threshold": self.confidence_threshold,
+            }, f, indent=2)
 
     @classmethod
     def load(cls, path="checkpoints/baseline", taxonomy_path="config/taxonomy.json"):
@@ -141,6 +146,8 @@ class BaselineGrievanceClassifier:
         meta_path = os.path.join(path, "metadata.json")
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
-                obj.confidence_threshold = float(json.load(f).get("confidence_threshold", obj.confidence_threshold))
+                metadata = json.load(f)
+                obj.confidence_threshold = float(metadata.get("confidence_threshold", obj.confidence_threshold))
+                obj.model_version = str(metadata.get("model_version", obj.model_version))
         obj.is_fitted = True
         return obj

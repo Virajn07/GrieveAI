@@ -76,6 +76,7 @@ Desktop.ini
 # Machine Learning model checkpoints
 # ------------------------------------------------------------
 # Large trained model files should NOT be committed to Git.
+checkpoints/indicbert_lora/run1/
 checkpoints/**/*.zip
 checkpoints/**/*.safetensors
 checkpoints/**/*.bin

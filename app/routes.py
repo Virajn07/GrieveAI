@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 import os
+
+import pandas as pd
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session, url_for
 
 from app.models_db import AuditLog, Grievance, as_utc, db, utc_now
-from app.services import _audit, get_classifier, submit_grievance as submit_grievance_service
+from app.services import _audit, get_classifier, get_embedder, get_similarity_vectorizer, submit_grievance as submit_grievance_service
 from src.language_id import redact_pii
+from src.priority_dedup import cluster_recurring_grievances
 
 bp = Blueprint("main", __name__)
 
@@ -90,7 +95,132 @@ def index():
         departments = json.loads(Path(os.getenv("DEPARTMENTS_CONFIG", "config/departments.json")).read_text(encoding="utf-8")).get("mapping", {})
     except (OSError, ValueError):
         departments = {}
-    return render_template("dashboard.html", grievances=grievances, counts=counts, departments=sorted(set(departments.values())), selected_department=department, selected_status=status, now=utc_now())
+    analytics = _build_analytics()
+    return render_template("dashboard.html", grievances=grievances, counts=counts, analytics=analytics, departments=sorted(set(departments.values())), selected_department=department, selected_status=status, now=utc_now())
+
+
+def _build_analytics():
+    rows = Grievance.query.order_by(Grievance.submitted_at.desc()).all()
+    categories = Counter(row.category for row in rows)
+    subcategories = Counter(row.subcategory for row in rows)
+    priorities = Counter(str(row.priority) for row in rows)
+    departments = Counter(row.routed_department for row in rows if row.routed_department)
+    statuses = Counter(row.status for row in rows)
+    trends = Counter(as_utc(row.submitted_at).date().isoformat() for row in rows if row.submitted_at)
+    classifier = get_classifier() if rows else None
+    recurrence_rows = [
+        (row.id, row.text, row.category, row.subcategory)
+        for row in rows[:200]
+    ]
+    clusters = cluster_recurring_grievances(
+        recurrence_rows,
+        vectorizer=(getattr(classifier, "vectorizer", None) or get_similarity_vectorizer()),
+        embedder=get_embedder(),
+    ) if recurrence_rows else []
+    stored_clusters = Counter(row.recurring_cluster_id for row in rows if row.recurring_cluster_id)
+    return {
+        "source": "local synthetic/demo submissions; workflow counts are not model evaluation metrics",
+        "total_grievances": len(rows),
+        "open_grievances": sum(row.status in {"submitted", "routed", "in_progress"} for row in rows),
+        "resolved_grievances": statuses.get("resolved", 0),
+        "category_distribution": dict(sorted(categories.items())),
+        "subcategory_distribution": dict(sorted(subcategories.items())),
+        "priority_distribution": dict(sorted(priorities.items())),
+        "high_priority_count": sum(row.priority >= 4 for row in rows),
+        "low_confidence_count": sum(
+            row.confidence_threshold is not None and row.confidence < row.confidence_threshold
+            for row in rows
+        ),
+        "human_review_count": sum(bool(row.manual_review) for row in rows),
+        "unresolved_count": sum(row.status not in {"resolved", "rejected", "closed"} for row in rows),
+        "duplicate_count": sum(row.duplicate_of_id is not None for row in rows),
+        "recurring_clusters": clusters,
+        "stored_recurring_group_count": len(stored_clusters),
+        "recurring_issue_count": len(stored_clusters),
+        "department_workload": dict(sorted(departments.items())),
+        "status_distribution": dict(sorted(statuses.items())),
+        "model_version_distribution": dict(sorted(Counter(row.model_version or "unknown" for row in rows).items())),
+        "daily_submissions": dict(sorted(trends.items())),
+        "synthetic_training_dataset": _synthetic_dataset_analytics(),
+    }
+
+
+@lru_cache(maxsize=2)
+def _load_synthetic_dataset_analytics(dataset_path: str, modified_ns: int):
+    dataset = pd.read_csv(dataset_path)
+    category_counts = Counter(dataset["category"].astype(str))
+    subcategory_counts = Counter(dataset["subcategory"].astype(str))
+    priority_counts = Counter(str(int(value)) for value in dataset["priority"])
+    mapping_path = Path(os.getenv("DEPARTMENTS_CONFIG", "config/departments.json"))
+    try:
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8")).get("mapping", {})
+    except (OSError, ValueError):
+        mapping = {}
+    recommendation_counts = Counter()
+    for category, count in category_counts.items():
+        if mapping.get(category):
+            recommendation_counts[mapping[category]] += count
+    cluster_rows = [
+        (row.id, row.text, row.category, row.subcategory)
+        for row in dataset.head(500).itertuples(index=False)
+    ]
+    clusters = cluster_recurring_grievances(
+        cluster_rows,
+        vectorizer=get_similarity_vectorizer(),
+        embedder=get_embedder(),
+    )
+    threshold = float(os.getenv("ML_CONFIDENCE_THRESHOLD", "0.70"))
+    confidence_review_count = None
+    backend = os.getenv("MODEL_BACKEND", "indicbert").strip().lower()
+    model_version = {
+        "indicbert": os.getenv("INDICBERT_MODEL_VERSION", "indicbert_lora_run1"),
+        "baseline": "tfidf_baseline_synthetic_v2",
+        "muril": "muril_lora",
+    }.get(backend, backend)
+    if os.getenv("SYNTHETIC_ANALYTICS_RUN_INFERENCE", "0").strip() == "1":
+        classifier = get_classifier()
+        predictions = [classifier.predict(str(text)) for text in dataset["text"]]
+        threshold = float(getattr(classifier, "confidence_threshold", threshold))
+        model_version = getattr(classifier, "model_version", classifier.__class__.__name__)
+        confidence_review_count = sum(
+            float(prediction["confidence"]) < threshold for prediction in predictions
+        )
+    timestamp_column = next((name for name in ("submitted_at", "timestamp", "created_at") if name in dataset.columns), None)
+    return {
+        "available": True,
+        "source": "data/processed/grievances_synthetic.csv; descriptive synthetic data only",
+        "total_grievances": int(len(dataset)),
+        "category_distribution": dict(sorted(category_counts.items())),
+        "subcategory_distribution": dict(sorted(subcategory_counts.items())),
+        "priority_distribution": dict(sorted(priority_counts.items())),
+        "high_priority_count": int((dataset["priority"].astype(int) >= 4).sum()),
+        "low_confidence_prediction_count": (
+            int(confidence_review_count) if confidence_review_count is not None else None
+        ),
+        "confidence_threshold": threshold,
+        "duplicate_count": int(dataset["duplicate_of"].notna().sum()) if "duplicate_of" in dataset.columns else 0,
+        "recurring_clusters": clusters,
+        "common_themes": [
+            {"subcategory": name, "count": int(count)}
+            for name, count in subcategory_counts.most_common(10)
+        ],
+        "department_recommendation_distribution": dict(sorted(recommendation_counts.items())),
+        "daily_trends": None,
+        "daily_trends_note": "The checked-in synthetic dataset has no timestamp column." if timestamp_column is None else "Available from timestamp column.",
+        "unresolved_count": None,
+        "human_review_workflow_count": None,
+        "workflow_counts_note": "Ticket status and review counts come from app submissions, not training-corpus rows.",
+        "model_version": model_version,
+    }
+
+
+def _synthetic_dataset_analytics():
+    path = Path(os.getenv("SYNTHETIC_DATASET_PATH", "data/processed/grievances_synthetic.csv"))
+    try:
+        modified_ns = path.stat().st_mtime_ns
+    except OSError:
+        return {"available": False, "source": str(path), "note": "Synthetic training dataset is unavailable."}
+    return _load_synthetic_dataset_analytics(str(path.resolve()), modified_ns)
 
 
 @bp.route("/submit", methods=["GET", "POST"])
@@ -118,9 +248,9 @@ def _submission_payload(raw_value):
         return None, (jsonify({"error": "text exceeds 2000 characters"}), 400)
     try:
         grievance, explanation = submit_grievance_service(raw_text)
-    except FileNotFoundError:
+    except (FileNotFoundError, RuntimeError) as exc:
         db.session.rollback()
-        return None, (jsonify({"error": "model checkpoint unavailable"}), 503)
+        return None, (jsonify({"error": str(exc), "model_backend": os.getenv("MODEL_BACKEND", "indicbert")}), 503)
     except Exception:
         db.session.rollback()
         current_app.logger.error("Submission processing failed")
@@ -135,13 +265,21 @@ def _submission_payload(raw_value):
         "category": grievance.category,
         "subcategory": grievance.subcategory,
         "priority": grievance.priority,
+        "predicted_category": grievance.predicted_category,
+        "predicted_subcategory": grievance.predicted_subcategory,
+        "predicted_priority": grievance.predicted_priority,
         "confidence": grievance.confidence,
+        "confidence_threshold": grievance.confidence_threshold,
+        "model_version": grievance.model_version,
         "manual_review": grievance.manual_review,
         "duplicate_of": grievance.duplicate_of_id,
         "duplicate_similarity": grievance.duplicate_similarity,
         "duplicate_method": grievance.duplicate_method,
         "routed_department": grievance.routed_department,
         "summary": grievance.llm_summary,
+        "analysis": grievance.llm_analysis,
+        "related_matches": grievance.related_matches or [],
+        "recurring_cluster_id": grievance.recurring_cluster_id,
         "explanation": explanation,
     }
     return payload, None
@@ -163,7 +301,19 @@ def api_grievance(ack_number):
         "category": grievance.category,
         "subcategory": grievance.subcategory,
         "priority": grievance.priority,
+        "predicted_category": grievance.predicted_category,
+        "predicted_subcategory": grievance.predicted_subcategory,
+        "predicted_priority": grievance.predicted_priority,
+        "confidence": grievance.confidence,
+        "confidence_threshold": grievance.confidence_threshold,
+        "requires_human_review": grievance.manual_review,
+        "model_version": grievance.model_version,
         "routed_department": grievance.routed_department,
+        "duplicate_of": grievance.duplicate_of_id,
+        "duplicate_similarity": grievance.duplicate_similarity,
+        "related_matches": grievance.related_matches or [],
+        "recurring_cluster_id": grievance.recurring_cluster_id,
+        "llm_analysis": grievance.llm_analysis,
         "submitted_at": as_utc(grievance.submitted_at).isoformat(),
         "sla_deadline": as_utc(grievance.sla_deadline).isoformat() if grievance.sla_deadline else None,
         "sla_status": sla_status(grievance),
@@ -273,6 +423,11 @@ def override_classification(ack_number):
         return jsonify({"error": "priority must be an integer from 1 to 5"}), 400
     actor = actor_value.strip()
     old = f"{grievance.category}/{grievance.subcategory}/P{grievance.priority}"
+    classification_changed = (
+        grievance.category,
+        grievance.subcategory,
+        grievance.priority,
+    ) != (category, subcategory, priority)
     old_department = grievance.routed_department
     try:
         department_mapping = json.loads(Path(os.getenv("DEPARTMENTS_CONFIG", "config/departments.json")).read_text(encoding="utf-8")).get("mapping", {})
@@ -289,7 +444,13 @@ def override_classification(ack_number):
     if old_status == "submitted":
         grievance.status = "routed"
         _audit(grievance.id, "status_change", actor, "submitted -> routed; classification approved")
-    _audit(grievance.id, "classification_override", actor, f"{old} -> {category}/{subcategory}/P{priority}")
+    action = "classification_override" if classification_changed else "classification_accepted"
+    detail = (
+        f"{old} -> {category}/{subcategory}/P{priority}"
+        if classification_changed
+        else f"accepted {category}/{subcategory}/P{priority}"
+    )
+    _audit(grievance.id, action, actor, detail)
     if old_department != new_department:
         _audit(grievance.id, "routing_after_classification_override", actor, f"{old_department} -> {new_department}")
     db.session.commit()
@@ -337,6 +498,8 @@ def grievance_explanation(ack_number):
     except Exception:
         current_app.logger.exception("On-demand explanation failed for grievance id=%s", grievance.id)
         return jsonify({"available": False, "features": []})
+    grievance.explanation = explanation
+    db.session.commit()
     return jsonify({"available": True, "features": explanation})
 
 
@@ -347,7 +510,22 @@ def health():
         db_ok = True
     except Exception:
         db_ok = False
-    return jsonify({"status": "ok" if db_ok else "degraded", "database": db_ok, "service": "GrieveAI"}), (200 if db_ok else 503)
+    model_ok = False
+    model_version = None
+    model_error = None
+    try:
+        classifier = get_classifier()
+        model_ok = True
+        model_version = getattr(classifier, "model_version", classifier.__class__.__name__)
+    except Exception as exc:
+        model_error = str(exc)
+    status = "ok" if db_ok and model_ok else "degraded"
+    return jsonify({
+        "status": status,
+        "database": db_ok,
+        "model": {"ready": model_ok, "backend": os.getenv("MODEL_BACKEND", "indicbert"), "version": model_version, "error": model_error},
+        "service": "GrieveAI",
+    }), (200 if status == "ok" else 503)
 
 
 @bp.route("/api/v1/health")
@@ -388,6 +566,14 @@ def admin_metrics():
         .distinct().count()
     )
     return jsonify({"source": "observed local application events; not research evaluation", "submissions": Grievance.query.count(), "manual_review_queue": Grievance.query.filter_by(manual_review=True, status="submitted").count(), "automated_routing_decisions": routed, "automated_decisions_overridden": overrides, "override_rate": round(overrides / routed, 4) if routed else None, "override_rate_denominator": "automatically routed tickets; manually reviewed cases are excluded", "routing_accuracy": None, "routing_accuracy_note": "Requires validated gold department labels."})
+
+
+@bp.route("/api/v1/admin/analytics")
+def admin_analytics():
+    denied = _require_admin()
+    if denied:
+        return denied
+    return jsonify(_build_analytics())
 
 
 @bp.route("/admin/audit/<ack_number>")

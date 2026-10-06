@@ -18,7 +18,11 @@ class PipelineSmokeTests(unittest.TestCase):
     def setUp(self):
         self.temp = None
         self.previous_token = os.environ.get("ADMIN_TOKEN")
+        self.previous_dedupe_setting = os.environ.get("DISABLE_SEMANTIC_DEDUP")
+        self.previous_model_backend = os.environ.get("MODEL_BACKEND")
         os.environ["ADMIN_TOKEN"] = "test-admin-token"
+        os.environ["DISABLE_SEMANTIC_DEDUP"] = "1"
+        os.environ["MODEL_BACKEND"] = "baseline"
         self.app = create_app({
             "TESTING": True,
             "SQLALCHEMY_DATABASE_URI": "sqlite://",
@@ -41,6 +45,14 @@ class PipelineSmokeTests(unittest.TestCase):
             os.environ.pop("ADMIN_TOKEN", None)
         else:
             os.environ["ADMIN_TOKEN"] = self.previous_token
+        if self.previous_dedupe_setting is None:
+            os.environ.pop("DISABLE_SEMANTIC_DEDUP", None)
+        else:
+            os.environ["DISABLE_SEMANTIC_DEDUP"] = self.previous_dedupe_setting
+        if self.previous_model_backend is None:
+            os.environ.pop("MODEL_BACKEND", None)
+        else:
+            os.environ["MODEL_BACKEND"] = self.previous_model_backend
 
     def test_language_and_pii(self):
         self.assertEqual(detect_language_details("wifi nahi chal raha")["language"], "hinglish")
@@ -49,6 +61,27 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertNotIn("student@example.edu", clean)
         self.assertNotIn("9876543210", clean)
         self.assertNotIn("AB123456", clean)
+
+    def test_openrouter_receives_only_redacted_submission_text(self):
+        mock_response = {
+            "summary": "Library WiFi is unavailable.",
+            "root_cause": "Not established from the report.",
+            "recommended_action": "Check the access point.",
+            "department": "IT Services / Library",
+            "urgency_reason": "Normal review is appropriate.",
+            "recurring_issue": False,
+            "recurring_interpretation": "No prior related grievance was found.",
+        }
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "unit-test", "OPENROUTER_MODEL": "test-model"}):
+            with patch("src.llm_report._request_openrouter", return_value=mock_response) as openrouter:
+                response = self.client.post("/api/v1/grievances", json={
+                    "text": "Library WiFi is down; contact student@example.edu at 9876543210, roll AB123456"
+                })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        llm_text = openrouter.call_args.args[0]
+        for identifier in ("student@example.edu", "9876543210", "AB123456"):
+            self.assertNotIn(identifier, llm_text)
+        self.assertEqual(response.get_json()["analysis"]["provider"], "openrouter")
 
     def test_full_pipeline_review_routing_tracking_audit_and_override(self):
         self.assertIn(self.client.get("/").status_code, (302, 303))
@@ -70,15 +103,16 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertGreaterEqual(payload["priority"], 1)
         self.assertLessEqual(payload["priority"], 5)
         self.assertEqual(payload["script"], "latin")
-        self.assertTrue(payload["explanation"], "submission should expose the classifier explanation")
+        self.assertIsNone(payload["explanation"], "explanation should be generated only on admin request")
 
         ack = payload["ack_number"]
         inbox = self.client.get("/?status=review")
         self.assertEqual(inbox.status_code, 200)
         self.assertIn(ack, inbox.get_data(as_text=True))
+        self.assertIn("Accept prediction", inbox.get_data(as_text=True))
         with self.app.app_context():
             row = Grievance.query.filter_by(ack_number=ack).one()
-            self.assertEqual(row.explanation, payload["explanation"])
+            self.assertIsNone(row.explanation)
             self.assertNotIn("9876543210", row.text)
             self.assertNotIn("student@example.edu", row.text)
             self.assertIsNotNone(row.duplicate_method)
@@ -91,6 +125,7 @@ class PipelineSmokeTests(unittest.TestCase):
         })
         self.assertEqual(second.status_code, 200, second.get_json())
         self.assertEqual(second.get_json()["duplicate_of"], 1)
+        self.assertEqual(second.get_json()["related_matches"][0]["relationship"], "exact_duplicate")
 
         headers = {"X-ADMIN-TOKEN": "test-admin-token"}
         queue = self.client.get("/api/v1/review-queue", headers=headers)
@@ -98,6 +133,19 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(queue.get_json()["items"][0]["ack_number"], ack)
         bypass = self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "in_progress"}, headers=headers)
         self.assertEqual(bypass.status_code, 409)
+
+        accepted = self.client.post("/api/v1/grievances/" + ack + "/classification", json={
+            "category": payload["predicted_category"],
+            "subcategory": payload["predicted_subcategory"],
+            "priority": payload["predicted_priority"],
+            "actor": "smoke-test",
+        }, headers=headers)
+        self.assertEqual(accepted.status_code, 200, accepted.get_json())
+        with self.app.app_context():
+            row = Grievance.query.filter_by(ack_number=ack).one()
+            self.assertFalse(row.manual_review)
+            self.assertEqual(row.category, row.predicted_category)
+            self.assertTrue(AuditLog.query.filter_by(action="classification_accepted").count())
 
         route = self.client.post("/api/v1/grievances/" + ack + "/override", json={
             "department": "IT Services / Library", "actor": "smoke-test", "note": "reviewed"
@@ -112,7 +160,7 @@ class PipelineSmokeTests(unittest.TestCase):
             self.assertTrue(AuditLog.query.filter_by(action="override").count())
         self.assertEqual(self.client.get("/admin/audit/" + ack).status_code, 200)
         labels = self.client.post("/api/v1/grievances/" + ack + "/classification", json={
-            "category": "Canteen", "subcategory": "hygiene", "priority": 4, "actor": "smoke-test"
+            "category": "Canteen", "subcategory": "food_hygiene", "priority": 4, "actor": "smoke-test"
         }, headers=headers)
         self.assertEqual(labels.status_code, 200, labels.get_json())
         self.assertEqual(labels.get_json()["routed_department"], "Canteen Management")
@@ -126,17 +174,21 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(summary_review.status_code, 200)
         explanation = self.client.get("/api/v1/grievances/" + ack + "/explanation", headers=headers)
         self.assertTrue(explanation.get_json()["available"])
-        self.assertEqual(explanation.get_json()["features"], payload["explanation"])
+        self.assertTrue(explanation.get_json()["features"])
         with self.app.app_context():
             row = Grievance.query.filter_by(ack_number=ack).one()
             self.assertEqual(row.predicted_category, payload["category"])
             self.assertEqual(row.predicted_subcategory, payload["subcategory"])
             self.assertEqual(row.predicted_priority, payload["priority"])
+            self.assertTrue(row.model_version)
             self.assertNotEqual(row.category, row.predicted_category)
             self.assertEqual(row.model_department, "IT Services / Library")
             self.assertNotIn("9876543210", str(row.explanation))
+            self.assertEqual(row.explanation, explanation.get_json()["features"])
             second_row = Grievance.query.filter_by(ack_number=second.get_json()["ack_number"]).one()
             self.assertEqual(second_row.duplicate_of_id, row.id)
+            self.assertIsNotNone(row.recurring_cluster_id)
+            self.assertEqual(second_row.recurring_cluster_id, row.recurring_cluster_id)
             self.assertIsNotNone(second_row.duplicate_similarity)
             self.assertIsNotNone(row.sla_deadline)
             index_names = {index["name"] for index in db.inspect(db.engine).get_indexes("grievances")}
@@ -150,16 +202,34 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "submitted"}, headers=headers).status_code, 409)
         metrics = self.client.get("/api/v1/admin/metrics", headers=headers).get_json()
         self.assertIsNone(metrics["routing_accuracy"])
+        self.assertEqual(self.app.test_client().get("/api/v1/admin/analytics").status_code, 401)
+        analytics = self.client.get("/api/v1/admin/analytics", headers=headers)
+        self.assertEqual(analytics.status_code, 200)
+        self.assertEqual(analytics.get_json()["source"], "local synthetic/demo submissions; workflow counts are not model evaluation metrics")
+        self.assertGreaterEqual(analytics.get_json()["duplicate_count"], 1)
+        self.assertEqual(analytics.get_json()["total_grievances"], 2)
+        self.assertEqual(analytics.get_json()["open_grievances"], 2)
+        self.assertEqual(analytics.get_json()["resolved_grievances"], 0)
+        self.assertGreaterEqual(analytics.get_json()["recurring_issue_count"], 1)
+        corpus = analytics.get_json()["synthetic_training_dataset"]
+        self.assertTrue(corpus["available"])
+        self.assertGreater(corpus["total_grievances"], 0)
+        self.assertIn("no timestamp column", corpus["daily_trends_note"])
+        with self.client.session_transaction() as browser_session:
+            browser_session["admin_authenticated"] = True
+        dashboard = self.client.get("/")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn(b"Synthetic training corpus", dashboard.data)
 
     def test_seven_categories_languages_and_sla(self):
         examples = [
-            ("The syllabus is being rushed and lecture pace is too fast.", "Academics", "en"),
-            ("मेरे हॉल टिकट में परीक्षा केंद्र गलत दिख रहा है।", "Examinations", "hi"),
-            ("Mera refund teen hafton se pending hai, please status update karo.", "Fees_Accounts", "hinglish"),
-            ("Library Wi-Fi has not worked for three days and portal is unavailable.", "IT_Library", "en"),
-            ("हॉस्टल में पानी की सप्लाई कई दिनों से नहीं है।", "Infrastructure", "hi"),
-            ("Bus route change ho gaya hai aur bus roz late aati hai.", "Transport", "hinglish"),
-            ("Canteen food was undercooked and unhygienic today.", "Canteen", "en"),
+            ("Sab departments ka lunch break same hai, canteen mein bohot crowd hota hai, break timing review karo.", "Academics", "hinglish"),
+            ("the elective course ke internal aur external marks mein mismatch hai.", "Examinations", "hinglish"),
+            ("मुझे स्कॉलरशिप एप्लीकेशन के बारे में कोई अपडेट नहीं मिला।", "Fees_Accounts", "hi"),
+            ("I cannot access the online journal or digital library resource required for my course.", "IT_Library", "en"),
+            ("There is not enough two-wheeler parking space for students on campus.", "Infrastructure", "en"),
+            ("Boisar se daily travel ki wajah se students ke liye full college schedule follow karna difficult ho raha hai.", "Transport", "hinglish"),
+            ("Canteen ka menu mahino se nahi badla, hume aur variety chahiye.", "Canteen", "hinglish"),
         ]
         ack_numbers = []
         for text, expected_category, expected_language in examples:
@@ -180,10 +250,26 @@ class PipelineSmokeTests(unittest.TestCase):
             self.assertEqual(sla_status(rows[0], at=future), "overdue")
 
     def test_high_confidence_automatic_routing(self):
+        class KnownTransportClassifier:
+            confidence_threshold = 0.55
+            model_version = "test_transport_v1"
+            vectorizer = None
+
+            def predict(self, _text):
+                return {
+                    "category": "Transport", "subcategory": "commuting_accessibility",
+                    "priority": 3, "priority_raw": 3.0, "confidence": 0.99,
+                    "subcategory_confidence": 0.9,
+                }
+
+            def explain(self, _text):
+                return []
+
         self.app.config["CONFIDENCE_THRESHOLD"] = 0.0
-        response = self.client.post("/api/v1/grievances", json={
-            "text": "Bus route change ho gaya hai aur bus roz late aati hai."
-        })
+        with patch("app.services.get_classifier", return_value=KnownTransportClassifier()):
+            response = self.client.post("/api/v1/grievances", json={
+                "text": "Synthetic transport routing check: the student bus route is delayed."
+            })
         self.assertEqual(response.status_code, 200, response.get_json())
         body = response.get_json()
         self.assertFalse(body["manual_review"])

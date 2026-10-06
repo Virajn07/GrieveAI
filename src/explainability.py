@@ -1,7 +1,7 @@
 """Explainability adapters.
 
-For the local baseline, exact linear coefficients are used. For the MuRIL
-backend, SHAP can be enabled with a text masker. The wrapper deliberately
+For the local baseline, exact linear coefficients are used. For IndicBERT or
+MuRIL transformer backends, SHAP can be enabled with a text masker. The wrapper deliberately
 returns a small token/importance list suitable for the admin dashboard.
 """
 

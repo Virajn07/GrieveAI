@@ -19,7 +19,7 @@ def create_app(test_config=None):
     database_url = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{db_path}"
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    threshold = os.getenv("CONFIDENCE_THRESHOLD", "").strip()
+    threshold = os.getenv("ML_CONFIDENCE_THRESHOLD", os.getenv("CONFIDENCE_THRESHOLD", "")).strip()
     app.config["CONFIDENCE_THRESHOLD"] = float(threshold) if threshold else None
     if app.config["CONFIDENCE_THRESHOLD"] is not None and not 0 <= app.config["CONFIDENCE_THRESHOLD"] <= 1:
         raise ValueError("CONFIDENCE_THRESHOLD must be between 0 and 1")

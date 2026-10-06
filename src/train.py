@@ -12,12 +12,13 @@ import json
 import os
 import random
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import f1_score, mean_absolute_error, recall_score
+from sklearn.metrics import f1_score, mean_absolute_error, recall_score, precision_score
 from sklearn.model_selection import StratifiedGroupKFold
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
@@ -69,7 +70,7 @@ class GrievanceDataset(Dataset):
 def evaluate(model, loader, device, taxonomy):
     model.eval()
     y_cat, p_cat, y_sub, p_sub, y_sub_oracle, p_sub_oracle = [], [], [], [], [], []
-    y_pri, p_pri, high_true, high_pred = [], [], [], []
+    y_pri, p_pri, high_true, high_pred_raw, high_pred_decision = [], [], [], [], []
     with torch.no_grad():
         for batch in loader:
             input_ids = batch["input_ids"].to(device)
@@ -95,14 +96,22 @@ def evaluate(model, loader, device, taxonomy):
             y_sub_oracle.extend(batch["subcategory_label"].tolist()); p_sub_oracle.extend(oracle_sub.cpu().tolist())
             y_pri.extend(batch["priority_label"].tolist()); p_pri.extend(pri.cpu().tolist())
             high_true.extend((batch["priority_label"] >= 4).int().tolist())
-            high_pred.extend((pri >= 4).int().tolist())
+            priority_decision = torch.round(pri).clamp(1, 5)
+            high_pred_raw.extend((pri >= 4).int().tolist())
+            high_pred_decision.extend((priority_decision >= 4).int().tolist())
     return {
         "dataset_kind": "training_dataset_metrics_require_data_provenance_review",
         "category_macro_f1": f1_score(y_cat, p_cat, average="macro"),
         "subcategory_macro_f1": f1_score(y_sub, p_sub, average="macro"),
         "subcategory_macro_f1_given_gold_category": f1_score(y_sub_oracle, p_sub_oracle, average="macro"),
         "priority_mae": mean_absolute_error(y_pri, p_pri),
-        "priority_recall_high": recall_score(high_true, high_pred, zero_division=0),
+        "priority_recall_high": recall_score(high_true, high_pred_decision, zero_division=0),
+        "priority_precision_high": precision_score(high_true, high_pred_decision, zero_division=0),
+        "priority_recall_high_raw_cut4": recall_score(high_true, high_pred_raw, zero_division=0),
+        "priority_true_distribution": {str(k): int(v) for k, v in sorted(Counter(int(x) for x in y_pri).items())},
+        "priority_prediction_distribution": {
+            str(k): int(v) for k, v in sorted(Counter(int(max(1, min(5, round(x)))) for x in p_pri).items())
+        },
         "routing_accuracy": None,
         "routing_accuracy_note": "Requires validated gold department labels.",
         "override_rate": None,
@@ -219,6 +228,7 @@ def main(args):
     from importlib.metadata import PackageNotFoundError, version
     experiment_config.update({
         "model_identifier": MURIL_CHECKPOINT,
+        "model_version": f"muril_lora_{Path(args.output_dir).name}",
         "tokenizer_identifier": MURIL_CHECKPOINT,
         "dataset_sha256": hashlib.sha256(Path(args.data).read_bytes()).hexdigest(),
         "taxonomy_sha256": hashlib.sha256(Path(args.taxonomy).read_bytes()).hexdigest(),

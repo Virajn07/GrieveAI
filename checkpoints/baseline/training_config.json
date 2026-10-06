@@ -1,0 +1,14 @@
+{
+  "model_version": "tfidf_baseline_synthetic_v2",
+  "model_identifier": "tfidf_logistic_regression_plus_ridge_priority",
+  "dataset_sha256": "02bbc1e393544efe4a1513c395813bba70d0e754e140ab5366931ae880803ea6",
+  "taxonomy_sha256": "90587ccbfafea76f934fe4e1d31d48b32bf0d23f67078ca25d5a4a6cbb9bb2c9",
+  "scikit_learn_version": "1.5.2",
+  "split_seed": 42,
+  "split_sizes": {
+    "train": 922,
+    "validation": 299,
+    "test": 338
+  },
+  "duplicate_group_leakage": false
+}

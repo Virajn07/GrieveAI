@@ -191,6 +191,15 @@ class MuRILInference:
         device=None,
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
+        config_path = self.checkpoint_dir / "training_config.json"
+        try:
+            checkpoint_config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            checkpoint_config = {}
+        self.model_version = str(
+            checkpoint_config.get("model_version")
+            or f"muril_lora_{self.checkpoint_dir.name}"
+        )
 
         self.taxonomy = load_taxonomy(taxonomy_path)
 
@@ -395,6 +404,7 @@ class MuRILInference:
                 float(sub_probs[sub_idx]),
                 3,
             ),
+            "model_version": self.model_version,
         }
 
     def explain(
