@@ -1,20 +1,64 @@
 {
-  "dataset_kind": "synthetic_demo_pipeline_validation",
+  "dataset_kind": "synthetic_demo_pipeline_only",
   "research_claim": "not_vcet_pilot_results",
-  "category_accuracy": 1.0,
-  "category_macro_f1": 1.0,
-  "subcategory_macro_f1": 1.0,
-  "priority_mae": 0.49641214057507993,
-  "priority_recall_high": 0.05405405405405406,
-  "routing_accuracy": null,
-  "routing_accuracy_note": "Unavailable: no validated gold department column in this dataset.",
-  "override_rate": null,
-  "override_rate_note": "Unavailable in offline model evaluation: no observed human routing decisions.",
-  "confidence_threshold": {
-    "threshold": 0.41,
-    "routed_coverage": 0.984,
-    "routed_precision": 1.0
+  "split_seed": 42,
+  "split_sizes": {
+    "train": 922,
+    "validation": 299,
+    "test": 338
   },
-  "train_rows": 1246,
-  "validation_rows": 313
+  "duplicate_group_leakage": false,
+  "confidence_threshold": {
+    "threshold": 0.35,
+    "routed_coverage": 0.612,
+    "routed_precision": 0.962
+  },
+  "validation": {
+    "rows": 299,
+    "category_accuracy": 0.842809364548495,
+    "category_macro_f1": 0.8339583660003501,
+    "subcategory_macro_f1": 0.6068020355559739,
+    "priority_mae_raw": 0.5382341137123746,
+    "priority_recall_high": 0.27586206896551724,
+    "priority_precision_high": 1.0,
+    "priority_recall_high_raw_cut4": 0.0,
+    "priority_true_distribution": {
+      "1": 19,
+      "2": 127,
+      "3": 124,
+      "4": 26,
+      "5": 3
+    },
+    "priority_prediction_distribution": {
+      "2": 167,
+      "3": 124,
+      "4": 8
+    },
+    "high_priority_definition": "priority >= 4"
+  },
+  "test": {
+    "rows": 338,
+    "category_accuracy": 0.8550295857988166,
+    "category_macro_f1": 0.8733839692643183,
+    "subcategory_macro_f1": 0.651513422919673,
+    "priority_mae_raw": 0.5738757396449703,
+    "priority_recall_high": 0.07142857142857142,
+    "priority_precision_high": 0.6666666666666666,
+    "priority_recall_high_raw_cut4": 0.0,
+    "priority_true_distribution": {
+      "1": 35,
+      "2": 147,
+      "3": 128,
+      "4": 27,
+      "5": 1
+    },
+    "priority_prediction_distribution": {
+      "2": 187,
+      "3": 148,
+      "4": 3
+    },
+    "high_priority_definition": "priority >= 4"
+  },
+  "routing_accuracy": null,
+  "routing_accuracy_note": "Unavailable: no validated gold department column in this dataset."
 }

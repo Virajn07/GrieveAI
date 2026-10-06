@@ -137,6 +137,16 @@ The architecture contains:
 
 Subcategory prediction is constrained according to the selected category.
 
+### Runtime availability in this checkout
+
+The project research record names IndicBERT v2 + LoRA as the intended primary
+transformer. This checkout currently contains a runnable TF-IDF baseline and a
+MuRIL + LoRA loader/training path. It does **not** contain an IndicBERT
+inference loader or its trained checkpoint, so the Flask app defaults to the
+baseline; the historical IndicBERT scores below cannot be loaded or reproduced
+from this checkout alone. `src/inference.py` gives Flask a stable prediction
+interface while that checkpoint gap remains.
+
 ---
 
 # Model Experiments
@@ -151,6 +161,10 @@ The project has evaluated multiple approaches.
 | IndicBERT v2 + LoRA | 100.0% | 91.2% |
 
 The IndicBERT result above comes from the synthetic development/test dataset and should not be interpreted as VCET pilot performance.
+The current baseline is evaluated separately with a duplicate-safe 60/20/20
+split; its latest metrics are in `checkpoints/baseline/metrics.json`. Historical
+experiment scores above are retained as synthetic research notes, not as
+runtime guarantees.
 
 ---
 
@@ -248,7 +262,9 @@ An LLM is intended for tasks such as:
 - Action recommendations
 - Natural-language summaries
 
-The intended architecture uses an OpenRouter-compatible API with an open-weight LLM.
+The optional OpenRouter-compatible layer returns validated structured analysis
+when configured. A deterministic fallback keeps submissions working without a
+key or network access.
 
 PII redaction will occur before sensitive grievance content is sent to an external LLM service.
 
@@ -258,14 +274,14 @@ LLM recommendations are advisory and remain subject to human review.
 
 # Backend and Application
 
-Planned backend:
+Backend:
 
 - Python
 - Flask
 - Flask-SQLAlchemy
 - PostgreSQL
 
-Planned application components:
+Application components:
 
 - Student grievance submission
 - Grievance processing pipeline
@@ -285,7 +301,8 @@ Planned application components:
 
 # Database
 
-PostgreSQL is planned as the primary production database.
+SQLite is the local default; PostgreSQL is available through `DATABASE_URL` and
+Alembic migrations.
 
 The database will store structured grievance information such as:
 
@@ -309,7 +326,11 @@ The trained ML model itself is stored separately from PostgreSQL.
 
 # Model Deployment Concept
 
-The trained IndicBERT model will be stored locally with the application.
+The model checkpoint is stored separately from PostgreSQL and loaded by the
+inference module. In this checkout, the runnable default is the local baseline;
+MuRIL can be selected when its trained checkpoint is present. An IndicBERT
+checkpoint still needs a compatible loader before it can become the runtime
+backend.
 
 Conceptually:
 
@@ -317,7 +338,7 @@ Conceptually:
        ↓
     Flask application
        ↓
-    Local IndicBERT model
+    Configured local inference model
        ↓
     Classification
        ↓

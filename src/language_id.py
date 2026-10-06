@@ -14,8 +14,19 @@ from functools import lru_cache
 from pathlib import Path
 from src.configuration import load_threshold_settings
 
-ROLL_NUMBER_PATTERN = re.compile(r"\b[A-Z]{2,5}[- ]?\d{4,10}\b", re.IGNORECASE)
-PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+91[- ]?)?[6-9]\d{9}(?!\d)")
+ROLL_NUMBER_PATTERN = re.compile(
+    r"\b(?:[A-Z]{2,5}[- ]?\d{4,10}|\d{2,4}[A-Z]{2,5}\d{2,8})\b",
+    re.IGNORECASE,
+)
+LABELED_ID_PATTERN = re.compile(
+    r"\b(?:(?:student\s+id|roll\s*(?:no\.?|number)?|"
+    r"enrol(?:l)?ment\s*(?:no\.?|number)?|registration\s*(?:no\.?|number)?)"
+    r"\s*[:#-]?\s*(?=[A-Z0-9/-]*\d)[A-Z0-9][A-Z0-9/-]{3,20}|"
+    r"(?:aadhaar|aadhar)\s*[:#-]?\s*\d{4}[- ]?\d{4}[- ]?\d{4})\b",
+    re.IGNORECASE,
+)
+PHONE_PATTERN = re.compile(r"(?<!\d)(?:(?:\+?91)[- ]?)?[6-9]\d{4}[- ]?\d{5}(?!\d)")
+AADHAAR_PATTERN = re.compile(r"(?<!\d)\d{4}[- ]?\d{4}[- ]?\d{4}(?!\d)")
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 
 # Conservative markers: words that are disproportionately common in
@@ -128,6 +139,8 @@ def redact_pii(text: str) -> str:
     Name redaction is enabled only when an institution supplies an explicit name-list
     file; the system does not attempt to guess names from arbitrary text.
     """
+    text = LABELED_ID_PATTERN.sub("[ID]", text)
+    text = AADHAAR_PATTERN.sub("[ID_NUMBER]", text)
     text = EMAIL_PATTERN.sub("[EMAIL]", text)
     text = PHONE_PATTERN.sub("[PHONE]", text)
     text = ROLL_NUMBER_PATTERN.sub("[ROLL_NUMBER]", text)

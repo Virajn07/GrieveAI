@@ -1,3 +1,4 @@
 {
-  "confidence_threshold": 0.41
+  "model_version": "tfidf_baseline_synthetic_v2",
+  "confidence_threshold": 0.35
 }

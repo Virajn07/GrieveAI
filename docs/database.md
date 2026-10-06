@@ -16,4 +16,4 @@ Initialize or upgrade either database with:
 alembic upgrade head
 ```
 
-The migration adds nullable JSON model explanations and indexes for department, category, priority, duplicate reference, and SLA deadline. Existing grievance text is the PII-redacted text produced by the submission pipeline; the raw request text is not persisted. Model labels and model department remain separate from final category/subcategory/priority and assigned department, and correction/route/status events remain in `audit_log`.
+The migrations add nullable JSON model explanations, structured LLM analysis and similarity context, a model-version field, a recurring-cluster identifier, and indexes for department, category, priority, duplicate reference, recurring groups and SLA deadline. Existing grievance text is the PII-redacted text produced by the submission pipeline; the raw request text is not persisted. Original model labels remain separate from final category/subcategory/priority, and human corrections plus route/status events remain in `audit_log`.

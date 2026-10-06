@@ -11,40 +11,18 @@ import uuid
 from flask import current_app
 
 from app.models_db import AuditLog, Grievance, db, utc_now
-from src.baseline_classifier import BaselineGrievanceClassifier
+from src.inference import get_classifier, predict_grievance
 from src.language_id import redact_pii
 from src.llm_report import summarize_and_route
-from src.pipeline import analyze_grievance
-from src.priority_dedup import check_duplicate_against_recent, make_embedder
+from src.configuration import load_threshold_settings
+from src.priority_dedup import find_similar_grievances, cluster_recurring_grievances, make_embedder
 
-_classifier = None
 _embedder = None
-
-
-def get_classifier():
-    global _classifier
-    backend = os.getenv("MODEL_BACKEND", "baseline").lower()
-    if backend == "muril":
-        if _classifier is None:
-            try:
-                from src.model import MuRILInference
-                checkpoint = os.getenv("MURIL_CHECKPOINT_DIR", "checkpoints/muril_lora/run1")
-                _classifier = MuRILInference(checkpoint, os.getenv("TAXONOMY_CONFIG", "config/taxonomy.json"))
-            except Exception:
-                current_app.logger.exception("MuRIL model unavailable; falling back to configured local baseline")
-        if _classifier is not None:
-            return _classifier
-    if _classifier is None:
-        _classifier = BaselineGrievanceClassifier.load(
-            os.getenv("BASELINE_CHECKPOINT_DIR", "checkpoints/baseline"),
-            os.getenv("TAXONOMY_CONFIG", "config/taxonomy.json"),
-        )
-    return _classifier
 
 
 def get_embedder():
     global _embedder
-    if _embedder is None and os.getenv("DISABLE_SEMANTIC_DEDUP", "1") != "1":
+    if _embedder is None and os.getenv("DISABLE_SEMANTIC_DEDUP", "0") != "1":
         _embedder = make_embedder()
     return _embedder
 
@@ -67,38 +45,58 @@ def _audit(gid, action, actor, detail):
 def submit_grievance(raw_text: str):
     """Redact, analyze, route/gate, and persist a submission; never render UI."""
     clf = get_classifier()
-    analysis = analyze_grievance(raw_text, clf, current_app.config["CONFIDENCE_THRESHOLD"])
-    text = analysis["text"]
-    language_info = analysis["language"]
-    language = language_info["language"]
-    prediction = analysis["prediction"]
-    try:
-        explanation = clf.explain(text)
-    except Exception:
-        current_app.logger.exception("Could not generate submission explanation")
-        explanation = []
-
+    inference = predict_grievance(
+        raw_text, classifier=clf, confidence_threshold=current_app.config["CONFIDENCE_THRESHOLD"]
+    )
+    text = inference["redacted_text"]
+    language = inference["language"]
+    prediction = {
+        "category": inference["category"],
+        "subcategory": inference["subcategory"],
+        "priority": inference["priority"],
+        "priority_raw": inference["priority_raw"],
+        "confidence": inference["confidence"],
+        "subcategory_confidence": inference["subcategory_confidence"],
+    }
     recent_rows = (
         Grievance.query.filter(
             Grievance.category == prediction["category"],
             Grievance.submitted_at >= utc_now() - timedelta(days=30),
         )
-        .with_entities(Grievance.id, Grievance.text)
+        .with_entities(Grievance.id, Grievance.text, Grievance.category, Grievance.subcategory)
         .order_by(Grievance.submitted_at.desc())
         .limit(200)
         .all()
     )
-    dup_id, dup_sim, dup_method = check_duplicate_against_recent(
+    similar_matches = find_similar_grievances(
         text,
         recent_rows,
         vectorizer=getattr(clf, "vectorizer", None),
-        threshold=current_app.config["DEDUPE_THRESHOLD"],
         embedder=get_embedder(),
+        duplicate_threshold=current_app.config["DEDUPE_THRESHOLD"],
+        related_threshold=load_threshold_settings()["related_similarity_threshold"],
+        top_k=5,
     )
+    duplicate_match = next(
+        (match for match in similar_matches if match["relationship"] in {"exact_duplicate", "near_duplicate"}),
+        None,
+    )
+    dup_id = duplicate_match["grievance_id"] if duplicate_match else None
+    dup_sim = duplicate_match["similarity"] if duplicate_match else (similar_matches[0]["similarity"] if similar_matches else 0.0)
+    dup_method = duplicate_match["method"] if duplicate_match else (similar_matches[0]["method"] if similar_matches else "none")
 
-    threshold = analysis["threshold"]
-    llm_result = summarize_and_route(text, prediction["category"], prediction["subcategory"], os.getenv("DEPARTMENTS_CONFIG", "config/departments.json"))
-    manual_review = analysis["manual_review"] or not llm_result["recommended_department"]
+    threshold = inference["confidence_threshold"]
+    llm_result = summarize_and_route(
+        text,
+        prediction["category"],
+        prediction["subcategory"],
+        os.getenv("DEPARTMENTS_CONFIG", "config/departments.json"),
+        priority=prediction["priority"],
+        confidence=prediction["confidence"],
+        duplicate_context=similar_matches,
+        recurring_context=similar_matches,
+    )
+    manual_review = inference["requires_human_review"] or not llm_result["recommended_department"]
     department = None if manual_review else llm_result["recommended_department"]
     status = "submitted" if manual_review else "routed"
 
@@ -108,12 +106,12 @@ def submit_grievance(raw_text: str):
         ack_number=ack_number,
         text=text,
         language=language,
-        script=language_info["script"],
-        language_confidence=language_info["confidence"],
+        script=inference["script"],
+        language_confidence=inference["language_confidence"],
         category=prediction["category"],
         subcategory=prediction["subcategory"],
         priority=prediction["priority"],
-        explanation=explanation,
+        explanation=None,
         predicted_category=prediction["category"],
         predicted_subcategory=prediction["subcategory"],
         predicted_priority=prediction["priority"],
@@ -121,16 +119,25 @@ def submit_grievance(raw_text: str):
         confidence=prediction["confidence"],
         confidence_threshold=float(threshold),
         subcategory_confidence=prediction.get("subcategory_confidence"),
+        model_version=getattr(clf, "model_version", clf.__class__.__name__),
         status=status,
         routed_department=department,
-        model_department=llm_result["recommended_department"],
         manual_review=manual_review,
         automated_route=not manual_review,
         duplicate_of_id=dup_id,
         duplicate_similarity=dup_sim,
         duplicate_method=dup_method,
+        related_matches=[
+            {key: match[key] for key in ("grievance_id", "similarity", "relationship", "method")}
+            for match in similar_matches
+        ],
         llm_summary=llm_result["summary"],
         summary_provider=llm_result["provider"],
+        model_department=llm_result["llm_department_recommendation"],
+        llm_analysis={key: llm_result[key] for key in (
+            "summary", "root_cause", "recommended_action", "department_recommendation",
+            "urgency_reason", "recurring_issue", "recurring_interpretation", "provider", "used_fallback",
+        )},
         submitted_at=now,
         prediction_at=now,
         routing_at=None if manual_review else now,
@@ -139,11 +146,29 @@ def submit_grievance(raw_text: str):
     )
     db.session.add(grievance)
     db.session.flush()
+    cluster_rows = list(recent_rows) + [(grievance.id, text, prediction["category"], prediction["subcategory"])]
+    recurring_clusters = cluster_recurring_grievances(
+        cluster_rows,
+        vectorizer=getattr(clf, "vectorizer", None),
+        embedder=get_embedder(),
+    )
+    current_cluster = next(
+        (cluster for cluster in recurring_clusters if str(grievance.id) in cluster["grievance_ids"]),
+        None,
+    )
+    if current_cluster:
+        grievance.recurring_cluster_id = current_cluster["cluster_id"]
+        member_ids = [int(value) for value in current_cluster["grievance_ids"] if value.isdigit() and int(value) != grievance.id]
+        if member_ids:
+            Grievance.query.filter(Grievance.id.in_(member_ids)).update(
+                {Grievance.recurring_cluster_id: current_cluster["cluster_id"]},
+                synchronize_session=False,
+            )
     _audit(grievance.id, "submitted", "system", f"category={prediction['category']}; confidence={prediction['confidence']}; language={language}")
     if manual_review:
-        reason = "confidence_below_threshold" if analysis["manual_review"] else "department_mapping_unavailable"
+        reason = "confidence_below_threshold" if inference["requires_human_review"] else "department_mapping_unavailable"
         _audit(grievance.id, "manual_review_queued", "system", f"reason={reason}; threshold={threshold}")
     else:
         _audit(grievance.id, "routed", "system", f"department={department}")
     db.session.commit()
-    return grievance, explanation
+    return grievance, None
