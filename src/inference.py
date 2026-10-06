@@ -1,14 +1,12 @@
 """Production-facing, UI-independent grievance inference API.
 
-The Flask layer can call :func:`predict_grievance` without importing training
-code. A lightweight baseline remains the default so local use does not require
-GPU or transformer downloads; a saved MuRIL adapter can be selected through
-``MODEL_BACKEND=muril``.
+IndicBERT v2 + LoRA is the primary configured model. TF-IDF is available only
+when explicitly selected with ``MODEL_BACKEND=baseline``. Missing transformer
+assets raise a clear error instead of silently changing the model.
 """
 
 from __future__ import annotations
 
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -16,36 +14,40 @@ from typing import Any
 from src.baseline_classifier import BaselineGrievanceClassifier
 from src.pipeline import analyze_grievance
 
-logger = logging.getLogger(__name__)
 _classifier: Any | None = None
-_classifier_key: tuple[str, str, str, str] | None = None
+_classifier_key: tuple[str, str, str, str, str] | None = None
 
 
 def get_classifier() -> Any:
     """Load and cache the configured inference model.
 
-    A missing optional transformer checkpoint is logged and falls back to the
-    checked-in baseline, matching the app's local-first behavior.
+    The primary IndicBERT backend and explicit alternatives are never swapped
+    silently. Set ``MODEL_BACKEND=baseline`` to deliberately use TF-IDF.
     """
     global _classifier, _classifier_key
-    backend = os.getenv("MODEL_BACKEND", "baseline").strip().lower()
+    backend = os.getenv("MODEL_BACKEND", "indicbert").strip().lower()
     taxonomy_path = os.getenv("TAXONOMY_CONFIG", "config/taxonomy.json")
     baseline_path = os.getenv("BASELINE_CHECKPOINT_DIR", "checkpoints/baseline")
-    transformer_path = os.getenv("MURIL_CHECKPOINT_DIR", "checkpoints/muril_lora/run1")
-    key = (backend, taxonomy_path, baseline_path, transformer_path)
+    indicbert_path = os.getenv("INDICBERT_CHECKPOINT_DIR", "checkpoints/indicbert_lora/run1")
+    muril_path = os.getenv("MURIL_CHECKPOINT_DIR", "checkpoints/muril_lora/run1")
+    key = (backend, taxonomy_path, baseline_path, indicbert_path, muril_path)
     if _classifier is not None and _classifier_key == key:
         return _classifier
 
-    if backend == "muril":
-        try:
-            from src.model import MuRILInference
+    if backend == "indicbert":
+        from src.indicbert_inference import IndicBERTInference
 
-            _classifier = MuRILInference(transformer_path, taxonomy_path)
-            _classifier_key = key
-            return _classifier
-        except Exception:
-            logger.exception("MuRIL model unavailable; using the local baseline")
-    elif backend != "baseline":
+        _classifier = IndicBERTInference(indicbert_path, taxonomy_path)
+        _classifier_key = key
+        return _classifier
+
+    if backend == "muril":
+        from src.model import MuRILInference
+
+        _classifier = MuRILInference(muril_path, taxonomy_path)
+        _classifier_key = key
+        return _classifier
+    if backend != "baseline":
         raise ValueError(f"Unsupported MODEL_BACKEND: {backend!r}")
 
     _classifier = BaselineGrievanceClassifier.load(baseline_path, taxonomy_path)

@@ -13,7 +13,7 @@ import pandas as pd
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session, url_for
 
 from app.models_db import AuditLog, Grievance, as_utc, db, utc_now
-from app.services import _audit, get_classifier, get_embedder, submit_grievance as submit_grievance_service
+from app.services import _audit, get_classifier, get_embedder, get_similarity_vectorizer, submit_grievance as submit_grievance_service
 from src.language_id import redact_pii
 from src.priority_dedup import cluster_recurring_grievances
 
@@ -114,7 +114,7 @@ def _build_analytics():
     ]
     clusters = cluster_recurring_grievances(
         recurrence_rows,
-        vectorizer=getattr(classifier, "vectorizer", None),
+        vectorizer=(getattr(classifier, "vectorizer", None) or get_similarity_vectorizer()),
         embedder=get_embedder(),
     ) if recurrence_rows else []
     stored_clusters = Counter(row.recurring_cluster_id for row in rows if row.recurring_cluster_id)
@@ -145,8 +145,6 @@ def _build_analytics():
 @lru_cache(maxsize=2)
 def _load_synthetic_dataset_analytics(dataset_path: str, modified_ns: int):
     dataset = pd.read_csv(dataset_path)
-    classifier = get_classifier()
-    predictions = [classifier.predict(str(text)) for text in dataset["text"]]
     category_counts = Counter(dataset["category"].astype(str))
     subcategory_counts = Counter(dataset["subcategory"].astype(str))
     priority_counts = Counter(str(int(value)) for value in dataset["priority"])
@@ -165,11 +163,25 @@ def _load_synthetic_dataset_analytics(dataset_path: str, modified_ns: int):
     ]
     clusters = cluster_recurring_grievances(
         cluster_rows,
-        vectorizer=getattr(classifier, "vectorizer", None),
+        vectorizer=get_similarity_vectorizer(),
         embedder=get_embedder(),
     )
-    threshold = float(getattr(classifier, "confidence_threshold", 0.0))
-    confidence_review_count = sum(float(prediction["confidence"]) < threshold for prediction in predictions)
+    threshold = float(os.getenv("ML_CONFIDENCE_THRESHOLD", "0.70"))
+    confidence_review_count = None
+    backend = os.getenv("MODEL_BACKEND", "indicbert").strip().lower()
+    model_version = {
+        "indicbert": os.getenv("INDICBERT_MODEL_VERSION", "indicbert_lora_run1"),
+        "baseline": "tfidf_baseline_synthetic_v2",
+        "muril": "muril_lora",
+    }.get(backend, backend)
+    if os.getenv("SYNTHETIC_ANALYTICS_RUN_INFERENCE", "0").strip() == "1":
+        classifier = get_classifier()
+        predictions = [classifier.predict(str(text)) for text in dataset["text"]]
+        threshold = float(getattr(classifier, "confidence_threshold", threshold))
+        model_version = getattr(classifier, "model_version", classifier.__class__.__name__)
+        confidence_review_count = sum(
+            float(prediction["confidence"]) < threshold for prediction in predictions
+        )
     timestamp_column = next((name for name in ("submitted_at", "timestamp", "created_at") if name in dataset.columns), None)
     return {
         "available": True,
@@ -179,7 +191,9 @@ def _load_synthetic_dataset_analytics(dataset_path: str, modified_ns: int):
         "subcategory_distribution": dict(sorted(subcategory_counts.items())),
         "priority_distribution": dict(sorted(priority_counts.items())),
         "high_priority_count": int((dataset["priority"].astype(int) >= 4).sum()),
-        "low_confidence_prediction_count": int(confidence_review_count),
+        "low_confidence_prediction_count": (
+            int(confidence_review_count) if confidence_review_count is not None else None
+        ),
         "confidence_threshold": threshold,
         "duplicate_count": int(dataset["duplicate_of"].notna().sum()) if "duplicate_of" in dataset.columns else 0,
         "recurring_clusters": clusters,
@@ -193,7 +207,7 @@ def _load_synthetic_dataset_analytics(dataset_path: str, modified_ns: int):
         "unresolved_count": None,
         "human_review_workflow_count": None,
         "workflow_counts_note": "Ticket status and review counts come from app submissions, not training-corpus rows.",
-        "model_version": getattr(classifier, "model_version", classifier.__class__.__name__),
+        "model_version": model_version,
     }
 
 
@@ -231,9 +245,9 @@ def _submission_payload(raw_value):
         return None, (jsonify({"error": "text exceeds 2000 characters"}), 400)
     try:
         grievance, explanation = submit_grievance_service(raw_text)
-    except FileNotFoundError:
+    except (FileNotFoundError, RuntimeError) as exc:
         db.session.rollback()
-        return None, (jsonify({"error": "model checkpoint unavailable"}), 503)
+        return None, (jsonify({"error": str(exc), "model_backend": os.getenv("MODEL_BACKEND", "indicbert")}), 503)
     except Exception:
         db.session.rollback()
         current_app.logger.error("Submission processing failed")
@@ -248,7 +262,11 @@ def _submission_payload(raw_value):
         "category": grievance.category,
         "subcategory": grievance.subcategory,
         "priority": grievance.priority,
+        "predicted_category": grievance.predicted_category,
+        "predicted_subcategory": grievance.predicted_subcategory,
+        "predicted_priority": grievance.predicted_priority,
         "confidence": grievance.confidence,
+        "confidence_threshold": grievance.confidence_threshold,
         "model_version": grievance.model_version,
         "manual_review": grievance.manual_review,
         "duplicate_of": grievance.duplicate_of_id,
@@ -280,7 +298,19 @@ def api_grievance(ack_number):
         "category": grievance.category,
         "subcategory": grievance.subcategory,
         "priority": grievance.priority,
+        "predicted_category": grievance.predicted_category,
+        "predicted_subcategory": grievance.predicted_subcategory,
+        "predicted_priority": grievance.predicted_priority,
+        "confidence": grievance.confidence,
+        "confidence_threshold": grievance.confidence_threshold,
+        "requires_human_review": grievance.manual_review,
+        "model_version": grievance.model_version,
         "routed_department": grievance.routed_department,
+        "duplicate_of": grievance.duplicate_of_id,
+        "duplicate_similarity": grievance.duplicate_similarity,
+        "related_matches": grievance.related_matches or [],
+        "recurring_cluster_id": grievance.recurring_cluster_id,
+        "llm_analysis": grievance.llm_analysis,
         "submitted_at": as_utc(grievance.submitted_at).isoformat(),
         "sla_deadline": as_utc(grievance.sla_deadline).isoformat() if grievance.sla_deadline else None,
         "sla_status": sla_status(grievance),
@@ -466,7 +496,22 @@ def health():
         db_ok = True
     except Exception:
         db_ok = False
-    return jsonify({"status": "ok" if db_ok else "degraded", "database": db_ok, "service": "GrieveAI"}), (200 if db_ok else 503)
+    model_ok = False
+    model_version = None
+    model_error = None
+    try:
+        classifier = get_classifier()
+        model_ok = True
+        model_version = getattr(classifier, "model_version", classifier.__class__.__name__)
+    except Exception as exc:
+        model_error = str(exc)
+    status = "ok" if db_ok and model_ok else "degraded"
+    return jsonify({
+        "status": status,
+        "database": db_ok,
+        "model": {"ready": model_ok, "backend": os.getenv("MODEL_BACKEND", "indicbert"), "version": model_version, "error": model_error},
+        "service": "GrieveAI",
+    }), (200 if status == "ok" else 503)
 
 
 @bp.route("/api/v1/health")

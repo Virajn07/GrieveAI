@@ -1,9 +1,9 @@
 {
   "status": "demo_defaults",
-  "confidence_threshold": 0.55,
+  "confidence_threshold": 0.70,
   "duplicate_similarity_threshold": 0.85,
   "related_similarity_threshold": 0.65,
   "recurring_similarity_threshold": 0.80,
   "fasttext_hindi_threshold": 0.55,
-  "notes": "Confidence threshold should be tuned using validation data. Environment values override these demo defaults."
+  "notes": "0.70 is an initial demo review threshold, not a scientifically calibrated optimum. Tune using appropriate validation data. Environment values override this default."
 }

@@ -19,8 +19,10 @@ class PipelineSmokeTests(unittest.TestCase):
         self.temp = None
         self.previous_token = os.environ.get("ADMIN_TOKEN")
         self.previous_dedupe_setting = os.environ.get("DISABLE_SEMANTIC_DEDUP")
+        self.previous_model_backend = os.environ.get("MODEL_BACKEND")
         os.environ["ADMIN_TOKEN"] = "test-admin-token"
         os.environ["DISABLE_SEMANTIC_DEDUP"] = "1"
+        os.environ["MODEL_BACKEND"] = "baseline"
         self.app = create_app({
             "TESTING": True,
             "SQLALCHEMY_DATABASE_URI": "sqlite://",
@@ -47,6 +49,10 @@ class PipelineSmokeTests(unittest.TestCase):
             os.environ.pop("DISABLE_SEMANTIC_DEDUP", None)
         else:
             os.environ["DISABLE_SEMANTIC_DEDUP"] = self.previous_dedupe_setting
+        if self.previous_model_backend is None:
+            os.environ.pop("MODEL_BACKEND", None)
+        else:
+            os.environ["MODEL_BACKEND"] = self.previous_model_backend
 
     def test_language_and_pii(self):
         self.assertEqual(detect_language_details("wifi nahi chal raha")["language"], "hinglish")

@@ -4,6 +4,7 @@ from unittest.mock import patch
 from src.baseline_classifier import BaselineGrievanceClassifier
 from src.inference import predict_grievance
 from src.configuration import load_threshold_settings
+from src.inference import get_classifier, reset_classifier_cache
 from src.language_id import redact_pii
 
 
@@ -46,6 +47,20 @@ class InferenceApiTests(unittest.TestCase):
     def test_confidence_threshold_is_configurable_by_environment(self):
         with patch.dict("os.environ", {"ML_CONFIDENCE_THRESHOLD": "0.72", "CONFIDENCE_THRESHOLD": "0.8"}):
             self.assertEqual(load_threshold_settings()["confidence_threshold"], 0.72)
+
+    def test_indicbert_missing_checkpoint_does_not_silently_fall_back(self):
+        reset_classifier_cache()
+        env = {
+            "MODEL_BACKEND": "indicbert",
+            "INDICBERT_CHECKPOINT_DIR": "missing/indicbert-checkpoint-for-test",
+            "TAXONOMY_CONFIG": "config/taxonomy.json",
+        }
+        try:
+            with patch.dict("os.environ", env):
+                with self.assertRaisesRegex(RuntimeError, "IndicBERT checkpoint is incomplete"):
+                    get_classifier()
+        finally:
+            reset_classifier_cache()
 
 
 if __name__ == "__main__":

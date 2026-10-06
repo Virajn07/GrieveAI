@@ -18,6 +18,7 @@ from src.configuration import load_threshold_settings
 from src.priority_dedup import find_similar_grievances, cluster_recurring_grievances, make_embedder
 
 _embedder = None
+_similarity_vectorizer = None
 
 
 def get_embedder():
@@ -25,6 +26,25 @@ def get_embedder():
     if _embedder is None and os.getenv("DISABLE_SEMANTIC_DEDUP", "0") != "1":
         _embedder = make_embedder()
     return _embedder
+
+
+def get_similarity_vectorizer():
+    """Load the trained TF-IDF vectorizer for similarity fallback only.
+
+    Classification remains with the selected model; IndicBERT has no sparse
+    vectorizer of its own, so this preserves duplicate/recurrence behavior
+    when optional sentence-transformer embeddings are unavailable.
+    """
+    global _similarity_vectorizer
+    if _similarity_vectorizer is None:
+        from src.baseline_classifier import BaselineGrievanceClassifier
+
+        baseline = BaselineGrievanceClassifier.load(
+            os.getenv("BASELINE_CHECKPOINT_DIR", "checkpoints/baseline"),
+            os.getenv("TAXONOMY_CONFIG", "config/taxonomy.json"),
+        )
+        _similarity_vectorizer = baseline.vectorizer
+    return _similarity_vectorizer
 
 
 def sla_hours(priority: int) -> int | None:
@@ -71,7 +91,7 @@ def submit_grievance(raw_text: str):
     similar_matches = find_similar_grievances(
         text,
         recent_rows,
-        vectorizer=getattr(clf, "vectorizer", None),
+        vectorizer=getattr(clf, "vectorizer", None) or get_similarity_vectorizer(),
         embedder=get_embedder(),
         duplicate_threshold=current_app.config["DEDUPE_THRESHOLD"],
         related_threshold=load_threshold_settings()["related_similarity_threshold"],
@@ -86,6 +106,21 @@ def submit_grievance(raw_text: str):
     dup_method = duplicate_match["method"] if duplicate_match else (similar_matches[0]["method"] if similar_matches else "none")
 
     threshold = inference["confidence_threshold"]
+    duplicate_context = [
+        {key: match[key] for key in ("grievance_id", "similarity", "relationship", "category", "subcategory", "text")}
+        for match in similar_matches
+        if match["relationship"] in {"exact_duplicate", "near_duplicate"}
+    ]
+    recurring_context = []
+    if similar_matches:
+        recurring_context.append({
+            "candidate_theme": f"{prediction['category']} / {prediction['subcategory']}",
+            "related_grievance_count": len(similar_matches),
+            "related_grievances": [
+                {key: match[key] for key in ("grievance_id", "similarity", "relationship", "category", "subcategory", "text")}
+                for match in similar_matches
+            ],
+        })
     llm_result = summarize_and_route(
         text,
         prediction["category"],
@@ -93,8 +128,8 @@ def submit_grievance(raw_text: str):
         os.getenv("DEPARTMENTS_CONFIG", "config/departments.json"),
         priority=prediction["priority"],
         confidence=prediction["confidence"],
-        duplicate_context=similar_matches,
-        recurring_context=similar_matches,
+        duplicate_context=duplicate_context,
+        recurring_context=recurring_context,
     )
     manual_review = inference["requires_human_review"] or not llm_result["recommended_department"]
     department = None if manual_review else llm_result["recommended_department"]
@@ -149,7 +184,7 @@ def submit_grievance(raw_text: str):
     cluster_rows = list(recent_rows) + [(grievance.id, text, prediction["category"], prediction["subcategory"])]
     recurring_clusters = cluster_recurring_grievances(
         cluster_rows,
-        vectorizer=getattr(clf, "vectorizer", None),
+        vectorizer=getattr(clf, "vectorizer", None) or get_similarity_vectorizer(),
         embedder=get_embedder(),
     )
     current_cluster = next(

@@ -1,7 +1,7 @@
 # Core ML (installed on Colab for training; heavy, skip for local Flask-only dev)
 torch>=2.2.0
 transformers>=4.41.0
-peft>=0.11.0
+peft>=0.20.0
 accelerate>=0.30.0
 scikit-learn==1.5.2
 pandas>=2.2.0
