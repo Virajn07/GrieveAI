@@ -14,7 +14,7 @@ class StructuredLlmTests(unittest.TestCase):
             "summary": "WiFi is unavailable in Lab 3.",
             "root_cause": "Not established from the report.",
             "recommended_action": "Check the Lab 3 access point and report findings.",
-            "department_recommendation": "IT Services / Library",
+            "department": "IT Services / Library",
             "urgency_reason": "The issue affects access to campus internet.",
             "recurring_issue": True,
             "recurring_interpretation": "Several similar lab connectivity reports were found.",
@@ -54,6 +54,17 @@ class StructuredLlmTests(unittest.TestCase):
         self.assertEqual(result["provider"], "deterministic")
         self.assertTrue(result["used_fallback"])
         self.assertEqual(result["recommended_department"], "IT Services / Library")
+
+    def test_provider_failure_does_not_break_fallback(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "unit-test", "OPENROUTER_MODEL": "test-model"}):
+            with self.assertLogs("src.llm_report", level="WARNING"):
+                with patch("src.llm_report._request_openrouter", side_effect=TimeoutError("mock timeout")):
+                    result = summarize_and_route(
+                        "Lab WiFi is down", "IT_Library", "wifi_network", priority=3, confidence=0.82
+                    )
+        self.assertEqual(result["provider"], "deterministic")
+        self.assertTrue(result["used_fallback"])
+        self.assertEqual(result["department_recommendation"], "IT Services / Library")
 
 
 if __name__ == "__main__":

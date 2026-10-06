@@ -170,7 +170,7 @@ def submit_grievance(raw_text: str):
         summary_provider=llm_result["provider"],
         model_department=llm_result["llm_department_recommendation"],
         llm_analysis={key: llm_result[key] for key in (
-            "summary", "root_cause", "recommended_action", "department_recommendation",
+            "summary", "root_cause", "recommended_action", "department", "department_recommendation",
             "urgency_reason", "recurring_issue", "recurring_interpretation", "provider", "used_fallback",
         )},
         submitted_at=now,

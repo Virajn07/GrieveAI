@@ -62,6 +62,27 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertNotIn("9876543210", clean)
         self.assertNotIn("AB123456", clean)
 
+    def test_openrouter_receives_only_redacted_submission_text(self):
+        mock_response = {
+            "summary": "Library WiFi is unavailable.",
+            "root_cause": "Not established from the report.",
+            "recommended_action": "Check the access point.",
+            "department": "IT Services / Library",
+            "urgency_reason": "Normal review is appropriate.",
+            "recurring_issue": False,
+            "recurring_interpretation": "No prior related grievance was found.",
+        }
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "unit-test", "OPENROUTER_MODEL": "test-model"}):
+            with patch("src.llm_report._request_openrouter", return_value=mock_response) as openrouter:
+                response = self.client.post("/api/v1/grievances", json={
+                    "text": "Library WiFi is down; contact student@example.edu at 9876543210, roll AB123456"
+                })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        llm_text = openrouter.call_args.args[0]
+        for identifier in ("student@example.edu", "9876543210", "AB123456"):
+            self.assertNotIn(identifier, llm_text)
+        self.assertEqual(response.get_json()["analysis"]["provider"], "openrouter")
+
     def test_full_pipeline_review_routing_tracking_audit_and_override(self):
         self.assertIn(self.client.get("/").status_code, (302, 303))
         login = self.client.post("/admin/login", data={"token": "test-admin-token"})
@@ -88,6 +109,7 @@ class PipelineSmokeTests(unittest.TestCase):
         inbox = self.client.get("/?status=review")
         self.assertEqual(inbox.status_code, 200)
         self.assertIn(ack, inbox.get_data(as_text=True))
+        self.assertIn("Accept prediction", inbox.get_data(as_text=True))
         with self.app.app_context():
             row = Grievance.query.filter_by(ack_number=ack).one()
             self.assertIsNone(row.explanation)
@@ -111,6 +133,19 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(queue.get_json()["items"][0]["ack_number"], ack)
         bypass = self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "in_progress"}, headers=headers)
         self.assertEqual(bypass.status_code, 409)
+
+        accepted = self.client.post("/api/v1/grievances/" + ack + "/classification", json={
+            "category": payload["predicted_category"],
+            "subcategory": payload["predicted_subcategory"],
+            "priority": payload["predicted_priority"],
+            "actor": "smoke-test",
+        }, headers=headers)
+        self.assertEqual(accepted.status_code, 200, accepted.get_json())
+        with self.app.app_context():
+            row = Grievance.query.filter_by(ack_number=ack).one()
+            self.assertFalse(row.manual_review)
+            self.assertEqual(row.category, row.predicted_category)
+            self.assertTrue(AuditLog.query.filter_by(action="classification_accepted").count())
 
         route = self.client.post("/api/v1/grievances/" + ack + "/override", json={
             "department": "IT Services / Library", "actor": "smoke-test", "note": "reviewed"
@@ -172,6 +207,10 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(analytics.status_code, 200)
         self.assertEqual(analytics.get_json()["source"], "local synthetic/demo submissions; workflow counts are not model evaluation metrics")
         self.assertGreaterEqual(analytics.get_json()["duplicate_count"], 1)
+        self.assertEqual(analytics.get_json()["total_grievances"], 2)
+        self.assertEqual(analytics.get_json()["open_grievances"], 2)
+        self.assertEqual(analytics.get_json()["resolved_grievances"], 0)
+        self.assertGreaterEqual(analytics.get_json()["recurring_issue_count"], 1)
         corpus = analytics.get_json()["synthetic_training_dataset"]
         self.assertTrue(corpus["available"])
         self.assertGreater(corpus["total_grievances"], 0)

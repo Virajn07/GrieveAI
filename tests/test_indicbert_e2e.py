@@ -90,6 +90,13 @@ class IndicBERTEndToEndTests(unittest.TestCase):
             self.assertEqual(tracked.status_code, 200)
             self.assertEqual(tracked.get_json()["predicted_category"], created[0]["category"])
             self.assertEqual(tracked.get_json()["model_version"], created[0]["model_version"])
+            explanation = client.get(
+                f"/api/v1/grievances/{created[0]['ack_number']}/explanation",
+                headers={"X-ADMIN-TOKEN": "integration-admin-token"},
+            )
+            self.assertEqual(explanation.status_code, 200, explanation.get_json())
+            self.assertTrue(explanation.get_json()["available"])
+            self.assertTrue(explanation.get_json()["features"])
 
             duplicate_response = client.post(
                 "/api/v1/grievances", json={"text": examples[0]}

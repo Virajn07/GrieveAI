@@ -121,6 +121,8 @@ def _build_analytics():
     return {
         "source": "local synthetic/demo submissions; workflow counts are not model evaluation metrics",
         "total_grievances": len(rows),
+        "open_grievances": sum(row.status in {"submitted", "routed", "in_progress"} for row in rows),
+        "resolved_grievances": statuses.get("resolved", 0),
         "category_distribution": dict(sorted(categories.items())),
         "subcategory_distribution": dict(sorted(subcategories.items())),
         "priority_distribution": dict(sorted(priorities.items())),
@@ -134,6 +136,7 @@ def _build_analytics():
         "duplicate_count": sum(row.duplicate_of_id is not None for row in rows),
         "recurring_clusters": clusters,
         "stored_recurring_group_count": len(stored_clusters),
+        "recurring_issue_count": len(stored_clusters),
         "department_workload": dict(sorted(departments.items())),
         "status_distribution": dict(sorted(statuses.items())),
         "model_version_distribution": dict(sorted(Counter(row.model_version or "unknown" for row in rows).items())),
@@ -420,6 +423,11 @@ def override_classification(ack_number):
         return jsonify({"error": "priority must be an integer from 1 to 5"}), 400
     actor = actor_value.strip()
     old = f"{grievance.category}/{grievance.subcategory}/P{grievance.priority}"
+    classification_changed = (
+        grievance.category,
+        grievance.subcategory,
+        grievance.priority,
+    ) != (category, subcategory, priority)
     old_department = grievance.routed_department
     try:
         department_mapping = json.loads(Path(os.getenv("DEPARTMENTS_CONFIG", "config/departments.json")).read_text(encoding="utf-8")).get("mapping", {})
@@ -436,7 +444,13 @@ def override_classification(ack_number):
     if old_status == "submitted":
         grievance.status = "routed"
         _audit(grievance.id, "status_change", actor, "submitted -> routed; classification approved")
-    _audit(grievance.id, "classification_override", actor, f"{old} -> {category}/{subcategory}/P{priority}")
+    action = "classification_override" if classification_changed else "classification_accepted"
+    detail = (
+        f"{old} -> {category}/{subcategory}/P{priority}"
+        if classification_changed
+        else f"accepted {category}/{subcategory}/P{priority}"
+    )
+    _audit(grievance.id, action, actor, detail)
     if old_department != new_department:
         _audit(grievance.id, "routing_after_classification_override", actor, f"{old_department} -> {new_department}")
     db.session.commit()

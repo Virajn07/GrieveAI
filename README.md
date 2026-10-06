@@ -187,20 +187,13 @@ scientifically calibrated optimum.
 
 # Model Experiments
 
-The project has evaluated multiple approaches.
-
-| Approach | Category Macro-F1 | Subcategory Macro-F1 |
-|---|---:|---:|
-| TF-IDF + Logistic Regression | 86.4% | 69.5% |
-| MuRIL + LoRA | 98.6% | 30.5% |
-| MuRIL category + TF-IDF subcategory | 98.6% | 69.6% |
-| IndicBERT v2 + LoRA | 100.0% | 91.2% |
-
-The IndicBERT result above comes from the synthetic development/test dataset and should not be interpreted as VCET pilot performance.
-The current baseline is evaluated separately with a duplicate-safe 60/20/20
-split; its latest metrics are in `checkpoints/baseline/metrics.json`. Historical
-experiment scores above are retained as synthetic research notes, not as
-runtime guarantees.
+Presentation-ready results, exact train/validation/test splits, current
+baseline comparisons, language-wise evaluation, limitations, and a reproducible
+IndicBERT evaluation command are documented in
+[`docs/PRESENTATION_METRICS.md`](docs/PRESENTATION_METRICS.md). All available
+results are from synthetic data; they are not VCET pilot performance. Earlier
+notebook comparison figures use different or incompletely identified runs and
+must not be combined as an apples-to-apples model ranking.
 
 ---
 

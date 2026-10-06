@@ -44,6 +44,7 @@ def _fallback_analysis(text, priority, deterministic_department, recurring_match
         "summary": _extractive_summary(text),
         "root_cause": "Not established from the grievance text.",
         "recommended_action": "Review the report and verify the relevant records before taking action.",
+        "department": deterministic_department,
         "department_recommendation": deterministic_department,
         "urgency_reason": (
             f"The classifier assigned priority {priority}/5; an administrator should confirm urgency."
@@ -60,6 +61,10 @@ def _fallback_analysis(text, priority, deterministic_department, recurring_match
 
 
 def _validate_analysis(value, departments):
+    # Accept the former internal spelling while prompting providers for the
+    # concise `department` key required by the prototype response contract.
+    if isinstance(value, dict) and "department" in value and "department_recommendation" not in value:
+        value = {**value, "department_recommendation": value["department"]}
     if not isinstance(value, dict) or any(key not in value for key in _REQUIRED_FIELDS):
         raise ValueError("LLM response is missing required structured fields")
     result = {}
@@ -77,6 +82,7 @@ def _validate_analysis(value, departments):
             if not isinstance(item, str) or not item.strip() or len(item) > 600:
                 raise ValueError(f"{key} must be a non-empty string of at most 600 characters")
             result[key] = item.strip()
+    result["department"] = result["department_recommendation"]
     return result
 
 
@@ -97,10 +103,10 @@ def _request_openrouter(text, prediction, duplicate_context, recurring_context, 
     }
     system = (
         "Analyze one student grievance. Return a JSON object with exactly these keys: "
-        "summary, root_cause, recommended_action, department_recommendation, urgency_reason, "
+        "summary, root_cause, recommended_action, department, urgency_reason, "
         "recurring_issue, recurring_interpretation. Use concise text. Do not invent facts; "
         "write 'Not established from the report.' when a cause is unknown. "
-        "department_recommendation must be one allowed department or null. "
+        "department must be one allowed department or null. "
         "Predictions and recommendations are advisory and must not change the classifier output."
     )
     client = OpenAI(
@@ -175,6 +181,7 @@ def summarize_and_route(
     mapping = _load_departments(departments_path)
     return {
         **analysis,
+        "department": analysis["department_recommendation"],
         "recommended_department": mapping.get(category),
         "llm_department_recommendation": analysis["department_recommendation"],
         "summary": analysis["summary"],
