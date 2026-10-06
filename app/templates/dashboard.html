@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GrieveAI - Prototype Dashboard</title>
+    <style>
+        body { font-family: sans-serif; max-width: 950px; margin: 40px auto; padding: 0 16px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 13px; }
+        th { background: #f4f4f4; }
+        tr.review { background: #fff8e1; }
+        code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; color: white; }
+        .badge-routed { background: #2e7d32; }
+        .badge-review { background: #ef6c00; }
+    </style>
+</head>
+<body>
+    <h1>GrieveAI</h1>
+    <p>Working prototype - classifying with the TF-IDF/LogReg baseline
+       (<code>src/baseline_classifier.py</code>) until the MuRIL+LoRA
+       checkpoint from Colab is swapped in.</p>
+    <p>Health check: <a href="/health">/health</a> &nbsp;|&nbsp;
+       Submit: <code>POST /submit</code> with JSON <code>{"text": "..."}</code></p>
+
+    <table>
+        <tr>
+            <th>Ack #</th><th>Text</th><th>Lang</th><th>Category</th><th>Sub-category</th>
+            <th>Priority</th><th>Confidence</th><th>Status</th><th>Department</th>
+        </tr>
+        {% for g in grievances %}
+        <tr class="{{ 'review' if g.manual_review else '' }}">
+            <td>{{ g.ack_number }}</td>
+            <td>{{ g.text[:60] }}{{ '...' if g.text|length > 60 else '' }}</td>
+            <td>{{ g.language }}</td>
+            <td>{{ g.category }}</td>
+            <td>{{ g.subcategory }}</td>
+            <td>{{ g.priority }}</td>
+            <td>{{ g.confidence }}</td>
+            <td>
+                {% if g.manual_review %}
+                <span class="badge badge-review">manual review</span>
+                {% else %}
+                <span class="badge badge-routed">{{ g.status }}</span>
+                {% endif %}
+            </td>
+            <td>{{ g.routed_department or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9">No grievances submitted yet. POST to /submit to see one appear here.</td></tr>
+        {% endfor %}
+    </table>
+</body>
+</html>

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Env / secrets
+.env
+*.key
+
+# Data (real VCET data should never be committed - PII risk)
+data/raw/*
+!data/raw/.gitkeep
+
+# Deep-learning checkpoints (too large for git, keep in Drive/local only).
+# checkpoints/baseline/ (small joblib files, TF-IDF+LogReg) is NOT ignored -
+# it's small enough to commit and lets the app run immediately after clone.
+checkpoints/muril_lora/
+*.pt
+*.bin
+*.safetensors
+
+# local SQLite db - each dev/demo instance gets its own
+*.db
+instance/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

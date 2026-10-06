@@ -1,0 +1,35 @@
+{
+  "categories": {
+    "Academics": {
+      "subcategories": ["syllabus_pace", "faculty_conduct", "timetable_conflict", "attendance_dispute"],
+      "base_priority": 2
+    },
+    "Examinations": {
+      "subcategories": ["revaluation_request", "hall_ticket_issue", "exam_schedule_conflict", "marks_discrepancy"],
+      "base_priority": 3
+    },
+    "Fees_Accounts": {
+      "subcategories": ["fee_discrepancy", "refund_delay", "scholarship_query", "payment_gateway_issue"],
+      "base_priority": 3
+    },
+    "IT_Library": {
+      "subcategories": ["portal_access", "book_availability", "wifi_network", "software_license"],
+      "base_priority": 2
+    },
+    "Infrastructure": {
+      "subcategories": ["classroom_maintenance", "hostel_issue", "sanitation", "electrical_fault"],
+      "base_priority": 3
+    },
+    "Transport": {
+      "subcategories": ["bus_routing", "schedule_delay", "safety_concern", "overcrowding"],
+      "base_priority": 4
+    },
+    "Canteen": {
+      "subcategories": ["food_quality", "hygiene", "pricing", "menu_variety"],
+      "base_priority": 2
+    }
+  },
+  "priority_scale": "1 (low) to 5 (urgent) - safety_concern and electrical_fault get +1 boost at generation time",
+  "languages": ["en", "hi", "hinglish"],
+  "notes": "base_priority is a heuristic starting point for synthetic data only - the real priority regression head learns this from labeled examples, it does not hardcode this table at inference time."
+}
