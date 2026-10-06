@@ -48,6 +48,21 @@ class InferenceApiTests(unittest.TestCase):
         with patch.dict("os.environ", {"ML_CONFIDENCE_THRESHOLD": "0.72", "CONFIDENCE_THRESHOLD": "0.8"}):
             self.assertEqual(load_threshold_settings()["confidence_threshold"], 0.72)
 
+    def test_blank_threshold_environment_values_use_config_defaults(self):
+        env = {
+            "ML_CONFIDENCE_THRESHOLD": "",
+            "CONFIDENCE_THRESHOLD": "",
+            "DEDUPE_THRESHOLD": "",
+            "RELATED_SIMILARITY_THRESHOLD": "",
+            "RECURRING_SIMILARITY_THRESHOLD": "",
+        }
+        with patch.dict("os.environ", env):
+            settings = load_threshold_settings()
+        self.assertEqual(settings["confidence_threshold"], 0.70)
+        self.assertEqual(settings["duplicate_similarity_threshold"], 0.85)
+        self.assertEqual(settings["related_similarity_threshold"], 0.65)
+        self.assertEqual(settings["recurring_similarity_threshold"], 0.80)
+
     def test_indicbert_missing_checkpoint_does_not_silently_fall_back(self):
         reset_classifier_cache()
         env = {
