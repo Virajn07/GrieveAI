@@ -1,70 +1,35 @@
-"""
-Run:  python -m pytest tests/test_generate_data.py -v
-(or just: python tests/test_generate_data.py)
-
-Sanity-checks the synthetic dataset before it's used for training -
-catches taxonomy/template mismatches early.
-"""
-
-import json
-import os
-import sys
 import csv
+import json
+import unittest
+from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-TAXONOMY_PATH = "config/taxonomy.json"
-DATA_PATH = "data/processed/grievances_synthetic.csv"
-
-
-def load_rows():
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_all_categories_present():
-    with open(TAXONOMY_PATH, "r", encoding="utf-8") as f:
-        taxonomy = json.load(f)
-    rows = load_rows()
-    seen_categories = {r["category"] for r in rows}
-    expected = set(taxonomy["categories"].keys())
-    assert seen_categories == expected, f"Missing categories: {expected - seen_categories}"
+class SyntheticDataTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with (ROOT / "data/processed/grievances_synthetic.csv").open("r", encoding="utf-8") as f:
+            cls.rows = list(csv.DictReader(f))
+        cls.taxonomy = json.loads((ROOT / "config/taxonomy.json").read_text(encoding="utf-8"))
 
+    def test_all_categories_present(self):
+        self.assertEqual({r["category"] for r in self.rows}, set(self.taxonomy["categories"]))
 
-def test_subcategory_belongs_to_category():
-    with open(TAXONOMY_PATH, "r", encoding="utf-8") as f:
-        taxonomy = json.load(f)
-    rows = load_rows()
-    for r in rows:
-        valid_subs = taxonomy["categories"][r["category"]]["subcategories"]
-        assert r["subcategory"] in valid_subs, \
-            f"Row {r['id']}: {r['subcategory']} not valid under {r['category']}"
+    def test_subcategory_belongs_to_category(self):
+        for row in self.rows:
+            self.assertIn(row["subcategory"], self.taxonomy["categories"][row["category"]]["subcategories"])
 
+    def test_priority_in_range(self):
+        self.assertTrue(all(1 <= int(r["priority"]) <= 5 for r in self.rows))
 
-def test_priority_in_range():
-    rows = load_rows()
-    for r in rows:
-        p = int(r["priority"])
-        assert 1 <= p <= 5, f"Row {r['id']}: priority {p} out of range"
+    def test_three_demo_languages_present(self):
+        self.assertEqual({r["language"] for r in self.rows}, {"en", "hi", "hinglish"})
 
-
-def test_all_three_languages_present():
-    rows = load_rows()
-    langs = {r["language"] for r in rows}
-    assert langs == {"en", "hi", "hinglish"}, f"Unexpected languages: {langs}"
-
-
-def test_duplicates_reference_valid_ids():
-    rows = load_rows()
-    ids = {r["id"] for r in rows}
-    for r in rows:
-        if r["duplicate_of"]:
-            assert r["duplicate_of"] in ids, f"Row {r['id']} references missing id {r['duplicate_of']}"
+    def test_duplicate_references_exist(self):
+        ids = {r["id"] for r in self.rows}
+        self.assertTrue(all(not r["duplicate_of"] or r["duplicate_of"] in ids for r in self.rows))
 
 
 if __name__ == "__main__":
-    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\nAll {len(tests)} checks passed.")
+    unittest.main()

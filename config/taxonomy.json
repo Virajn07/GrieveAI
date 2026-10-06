@@ -1,35 +1,89 @@
 {
+  "project_scope": {
+    "supported_languages": [
+      "en",
+      "hi",
+      "hinglish"
+    ],
+    "marathi_status": "stretch",
+    "sla_status": "proposed_defaults_only"
+  },
   "categories": {
     "Academics": {
-      "subcategories": ["syllabus_pace", "faculty_conduct", "timetable_conflict", "attendance_dispute"],
+      "subcategories": [
+        "timetable_scheduling",
+        "teaching_quality",
+        "faculty_conduct",
+        "syllabus_course_progress",
+        "attendance"
+      ],
       "base_priority": 2
     },
     "Examinations": {
-      "subcategories": ["revaluation_request", "hall_ticket_issue", "exam_schedule_conflict", "marks_discrepancy"],
+      "subcategories": [
+        "hall_ticket",
+        "marks_discrepancy",
+        "revaluation",
+        "examination_schedule",
+        "examination_process"
+      ],
       "base_priority": 3
     },
     "Fees_Accounts": {
-      "subcategories": ["fee_discrepancy", "refund_delay", "scholarship_query", "payment_gateway_issue"],
+      "subcategories": [
+        "fee_discrepancy",
+        "refund",
+        "scholarship",
+        "payment_transaction",
+        "accounts_financial_documentation"
+      ],
       "base_priority": 3
     },
     "IT_Library": {
-      "subcategories": ["portal_access", "book_availability", "wifi_network", "software_license"],
+      "subcategories": [
+        "portal_account_access",
+        "wifi_network",
+        "software_license",
+        "library_book_availability",
+        "library_digital_resources"
+      ],
       "base_priority": 2
     },
     "Infrastructure": {
-      "subcategories": ["classroom_maintenance", "hostel_issue", "sanitation", "electrical_fault"],
+      "subcategories": [
+        "classroom_lab_maintenance",
+        "electrical_issues",
+        "sanitation_cleanliness",
+        "parking_access",
+        "construction_facility_disruption"
+      ],
       "base_priority": 3
     },
     "Transport": {
-      "subcategories": ["bus_routing", "schedule_delay", "safety_concern", "overcrowding"],
-      "base_priority": 4
+      "subcategories": [
+        "commuting_accessibility",
+        "transport_academic_conflict",
+        "travel_safety_access"
+      ],
+      "base_priority": 2
     },
     "Canteen": {
-      "subcategories": ["food_quality", "hygiene", "pricing", "menu_variety"],
+      "subcategories": [
+        "food_quality",
+        "food_hygiene",
+        "pricing",
+        "menu_variety",
+        "food_service"
+      ],
       "base_priority": 2
     }
   },
-  "priority_scale": "1 (low) to 5 (urgent) - safety_concern and electrical_fault get +1 boost at generation time",
-  "languages": ["en", "hi", "hinglish"],
-  "notes": "base_priority is a heuristic starting point for synthetic data only - the real priority regression head learns this from labeled examples, it does not hardcode this table at inference time."
+  "priority_scale": "1 (low) to 5 (urgent)",
+  "priority_notes": "Synthetic priorities are heuristic labels only; real VCET priorities must be human-annotated.",
+  "languages": [
+    "en",
+    "hi",
+    "hinglish"
+  ],
+  "notes": "Taxonomy revised from HOD-reviewed seven-category scope and project-owner clarification. Subcategories are provisional and must be validated with the VCET grievance cell before a live pilot. Cross-domain grievances should retain primary actionable issue plus relevant cause/context/affected-area metadata in a later pipeline layer rather than creating duplicate subcategories."
 }

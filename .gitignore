@@ -1,32 +1,178 @@
+# ============================================================
+# GrieveAI - Git Ignore
+# ============================================================
+
+# ------------------------------------------------------------
 # Python
+# ------------------------------------------------------------
 __pycache__/
-*.pyc
-venv/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
 .venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
 
-# Env / secrets
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# ------------------------------------------------------------
+# Environment variables / secrets
+# ------------------------------------------------------------
 .env
+.env.*
+!.env.example
+
+# API keys / credentials
+*.pem
 *.key
+secrets/
+credentials/
+service_account*.json
 
-# Data (real VCET data should never be committed - PII risk)
-data/raw/*
-!data/raw/.gitkeep
+# ------------------------------------------------------------
+# IDE / Editor
+# ------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 
-# Deep-learning checkpoints (too large for git, keep in Drive/local only).
-# checkpoints/baseline/ (small joblib files, TF-IDF+LogReg) is NOT ignored -
-# it's small enough to commit and lets the app run immediately after clone.
-checkpoints/muril_lora/
-*.pt
-*.bin
-*.safetensors
+.idea/
+*.swp
+*.swo
+*~
 
-# local SQLite db - each dev/demo instance gets its own
+# ------------------------------------------------------------
+# Operating system
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ------------------------------------------------------------
+# Jupyter / Colab
+# ------------------------------------------------------------
+.ipynb_checkpoints/
+
+# ------------------------------------------------------------
+# Machine Learning model checkpoints
+# ------------------------------------------------------------
+# Large trained model files should NOT be committed to Git.
+checkpoints/**/*.zip
+checkpoints/**/*.safetensors
+checkpoints/**/*.bin
+checkpoints/**/*.pt
+checkpoints/**/*.pth
+checkpoints/**/*.ckpt
+checkpoints/**/*.onnx
+
+# Hugging Face cache
+.huggingface/
+huggingface_cache/
+transformers_cache/
+
+# Local experiment outputs
+runs/
+wandb/
+mlruns/
+
+# ------------------------------------------------------------
+# Large datasets
+# ------------------------------------------------------------
+# Keep large/local datasets out of Git.
+data/*.csv
+data/*.tsv
+data/*.xlsx
+data/*.xls
+data/*.parquet
+data/*.jsonl
+
+# Synthetic stress-test datasets
+*60000*.csv
+*60000*.json
+*stress*.csv
+*stress*.json
+
+# ------------------------------------------------------------
+# Local databases
+# ------------------------------------------------------------
 *.db
+*.sqlite
+*.sqlite3
+
+# PostgreSQL local dumps / backups
+*.dump
+*.backup
+
+# ------------------------------------------------------------
+# Logs
+# ------------------------------------------------------------
+*.log
+logs/
+
+# ------------------------------------------------------------
+# Generated reports / exports
+# ------------------------------------------------------------
+reports/generated/
+reports/output/
+exports/
+tmp/
+temp/
+
+# Generated PDFs
+*.generated.pdf
+
+# ------------------------------------------------------------
+# Flask
+# ------------------------------------------------------------
 instance/
 
-# IDE
-.vscode/
-.idea/
+# ------------------------------------------------------------
+# Node / frontend (if frontend tooling is added later)
+# ------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
 
-# OS
-.DS_Store
+# Build outputs
+dist/
+build/
+.next/
+.cache/
+
+# ------------------------------------------------------------
+# Local model / data backups
+# ------------------------------------------------------------
+backups/
+local_models/
+local_data/
+
+# ------------------------------------------------------------
+# OS / temporary files
+# ------------------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo

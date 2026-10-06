@@ -1,0 +1,20 @@
+{
+  "dataset_kind": "synthetic_demo_pipeline_validation",
+  "research_claim": "not_vcet_pilot_results",
+  "category_accuracy": 1.0,
+  "category_macro_f1": 1.0,
+  "subcategory_macro_f1": 1.0,
+  "priority_mae": 0.49641214057507993,
+  "priority_recall_high": 0.05405405405405406,
+  "routing_accuracy": null,
+  "routing_accuracy_note": "Unavailable: no validated gold department column in this dataset.",
+  "override_rate": null,
+  "override_rate_note": "Unavailable in offline model evaluation: no observed human routing decisions.",
+  "confidence_threshold": {
+    "threshold": 0.41,
+    "routed_coverage": 0.984,
+    "routed_precision": 1.0
+  },
+  "train_rows": 1246,
+  "validation_rows": 313
+}

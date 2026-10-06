@@ -1,50 +1,70 @@
-"""
-Priority estimation (already partly handled by the model's priority_head -
-see src/model.py) + near-duplicate detection (Week 3).
+"""Priority helpers and multilingual duplicate detection.
 
-Duplicate detection plan:
-    - Embed incoming grievance text using the pooled representation exposed
-      by GrieveAIClassifier.forward()["pooled"], or a lightweight
-      sentence-transformers model if a separate embedder is preferred.
-    - Compare against embeddings of grievances submitted in the last N days
-      via cosine similarity; flag anything above a threshold (start at 0.85,
-      tune against the synthetic near-duplicate examples in
-      data/processed/grievances_synthetic.csv where duplicate_of is set).
+Semantic sentence embeddings are preferred; a TF-IDF fallback keeps the local
+prototype dependency-light and makes the dedup feature available immediately.
 """
+
+from __future__ import annotations
+
+import os
+from functools import lru_cache
 
 import numpy as np
+from src.configuration import load_threshold_settings
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+    denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-9
+    return float(np.dot(a, b) / denom)
 
 
-def find_duplicates(new_embedding: np.ndarray, recent_embeddings: dict, threshold: float = 0.85):
-    """recent_embeddings: {grievance_id: embedding_vector}
-    Returns list of (grievance_id, similarity) above threshold, sorted descending."""
-    matches = []
-    for gid, emb in recent_embeddings.items():
-        sim = cosine_similarity(new_embedding, emb)
-        if sim >= threshold:
-            matches.append((gid, sim))
-    return sorted(matches, key=lambda x: -x[1])
+@lru_cache(maxsize=1)
+def _get_sentence_model(model_name: str):
+    try:
+        from sentence_transformers import SentenceTransformer
+        return SentenceTransformer(model_name)
+    except Exception:
+        return None
 
 
-def check_duplicate_against_recent(new_text: str, recent_rows, vectorizer, threshold: float = 0.85):
-    """Working prototype version - reuses the baseline classifier's own
-    TF-IDF vectorizer so no separate embedding model is needed yet.
+def make_embedder(model_name=None):
+    model_name = model_name or os.getenv(
+        "DEDUP_EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
+    )
+    return _get_sentence_model(model_name)
 
-    recent_rows: list of (grievance_id, text) tuples, e.g. same-category
-    grievances submitted in the last 30 days (see app/routes.py).
-    Returns (duplicate_id, similarity) - duplicate_id is None if nothing
-    clears the threshold, but similarity is always returned so the
-    caller/dashboard can show "closest match" even below threshold.
 
-    TODO: once src/model.py is trained, swap `vectorizer.transform` for
-    the model's pooled embedding (out["pooled"] in model.py) - same
-    downstream cosine_similarity call, better semantic matching."""
+def check_duplicate_against_recent(
+    new_text: str,
+    recent_rows,
+    vectorizer=None,
+    threshold: float | None = None,
+    embedder=None,
+):
+    """Return ``(duplicate_id, similarity, method)`` for the closest match.
+
+    The same-category/time-window filtering remains in the application layer.
+    """
+    if threshold is None:
+        threshold = load_threshold_settings()["duplicate_similarity_threshold"]
     if not recent_rows:
-        return None, 0.0
+        return None, 0.0, "none"
+
+    if embedder is not None:
+        try:
+            all_texts = [new_text] + [row[1] for row in recent_rows]
+            vectors = embedder.encode(all_texts, normalize_embeddings=True)
+            new_vec = np.asarray(vectors[0])
+            sims = [cosine_similarity(new_vec, np.asarray(v)) for v in vectors[1:]]
+            best_idx = int(np.argmax(sims))
+            best_sim = round(float(sims[best_idx]), 3)
+            best_id = recent_rows[best_idx][0]
+            return (best_id if best_sim >= threshold else None), best_sim, "sentence-transformer"
+        except Exception:
+            pass
+
+    if vectorizer is None:
+        return None, 0.0, "none"
 
     new_vec = vectorizer.transform([new_text]).toarray()[0]
     best_id, best_sim = None, 0.0
@@ -53,7 +73,5 @@ def check_duplicate_against_recent(new_text: str, recent_rows, vectorizer, thres
         sim = cosine_similarity(new_vec, vec)
         if sim > best_sim:
             best_sim, best_id = sim, gid
-
-    if best_sim >= threshold:
-        return best_id, round(best_sim, 3)
-    return None, round(best_sim, 3)
+    best_sim = round(best_sim, 3)
+    return (best_id if best_sim >= threshold else None), best_sim, "tfidf-fallback"

@@ -1,0 +1,24 @@
+experiment_name: muril_lora_synthetic_seed42_diagnostic
+git_commit: captured by the Colab notebook from the cloned checkout at runtime
+dataset_path: data/processed/grievances_synthetic.csv
+dataset_sha256: c982a99147589e75990361a2917465ada7aedc3ddfbbe2b6359d0c2a3ffa8dcc
+taxonomy_path: config/taxonomy.json
+taxonomy_sha256: 3fcbc9aa5082b3d76f4460e713a86a3f514ec544ee971c73338ef599aa7d5e8f
+random_seed: 42
+split_sizes: {train: 801, validation: 275, test: 247}
+model: google/muril-base-cased
+tokenizer: google/muril-base-cased
+lora: {rank: 8, alpha: 16, dropout: 0.1, target_modules: [query, value]}
+batch_size: 8
+learning_rate: 0.0002
+max_sequence_length: 128
+optimizer: AdamW
+scheduler: none
+loss: {category: cross_entropy, subcategory: gold_parent_masked_cross_entropy, priority: Huber_delta_1_weight_0.5}
+focal_gamma: 0
+priority_target_encoding: integer labels 1-5 cast to float
+priority_mae: absolute error on the original 1-5 scale
+high_priority_recall: true labels >= 4 and raw predictions >= 4
+epochs_in_this_checkpoint: 1
+reported_metrics: [category_macro_f1, subcategory_macro_f1, subcategory_macro_f1_given_gold_category, priority_mae, priority_recall_high]
+data_scope: synthetic only; metrics are not VCET performance
