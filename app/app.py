@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import secrets
 from flask import Flask
+from werkzeug.security import generate_password_hash
 from dotenv import load_dotenv
 
 
@@ -11,7 +12,11 @@ def create_app(test_config=None):
     load_dotenv()
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or secrets.token_hex(32)
+    app.config["ADMIN_USERNAME"] = os.getenv("ADMIN_USERNAME", "").strip() or None
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    app.config["ADMIN_PASSWORD_HASH"] = generate_password_hash(admin_password) if admin_password else None
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+    app.config["SHAP_TIMEOUT_SECONDS"] = float(os.getenv("SHAP_TIMEOUT_SECONDS", "35"))
     from src.configuration import load_threshold_settings
     configured_thresholds = load_threshold_settings()
     db_path = Path(__file__).resolve().parent / "instance" / "grieveai.db"

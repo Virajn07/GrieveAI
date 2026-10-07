@@ -17,12 +17,17 @@ from src.llm_report import summarize_and_route
 class PipelineSmokeTests(unittest.TestCase):
     def setUp(self):
         self.temp = None
-        self.previous_token = os.environ.get("ADMIN_TOKEN")
+        self.previous_username = os.environ.get("ADMIN_USERNAME")
+        self.previous_password = os.environ.get("ADMIN_PASSWORD")
         self.previous_dedupe_setting = os.environ.get("DISABLE_SEMANTIC_DEDUP")
         self.previous_model_backend = os.environ.get("MODEL_BACKEND")
-        os.environ["ADMIN_TOKEN"] = "test-admin-token"
+        os.environ["ADMIN_USERNAME"] = "test-admin-user"
+        os.environ["ADMIN_PASSWORD"] = "test-admin-password"
         os.environ["DISABLE_SEMANTIC_DEDUP"] = "1"
         os.environ["MODEL_BACKEND"] = "baseline"
+        ollama_patch = patch("src.llm_report._request_ollama", side_effect=ConnectionError("offline test"))
+        ollama_patch.start()
+        self.addCleanup(ollama_patch.stop)
         self.app = create_app({
             "TESTING": True,
             "SQLALCHEMY_DATABASE_URI": "sqlite://",
@@ -41,10 +46,14 @@ class PipelineSmokeTests(unittest.TestCase):
     def tearDown(self):
         with self.app.app_context():
             db.session.remove()
-        if self.previous_token is None:
-            os.environ.pop("ADMIN_TOKEN", None)
+        if self.previous_username is None:
+            os.environ.pop("ADMIN_USERNAME", None)
         else:
-            os.environ["ADMIN_TOKEN"] = self.previous_token
+            os.environ["ADMIN_USERNAME"] = self.previous_username
+        if self.previous_password is None:
+            os.environ.pop("ADMIN_PASSWORD", None)
+        else:
+            os.environ["ADMIN_PASSWORD"] = self.previous_password
         if self.previous_dedupe_setting is None:
             os.environ.pop("DISABLE_SEMANTIC_DEDUP", None)
         else:
@@ -85,9 +94,10 @@ class PipelineSmokeTests(unittest.TestCase):
 
     def test_full_pipeline_review_routing_tracking_audit_and_override(self):
         self.assertIn(self.client.get("/").status_code, (302, 303))
-        login = self.client.post("/admin/login", data={"token": "test-admin-token"})
+        login = self.client.post("/admin/login", data={"username": "test-admin-user", "password": "test-admin-password"})
         self.assertIn(login.status_code, (302, 303))
         self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.get("/").status_code, 200)  # authenticated session survives refresh
         self.assertEqual(self.client.get("/submit").status_code, 200)
         health = self.client.get("/api/v1/health")
         self.assertEqual(health.status_code, 200)
@@ -117,6 +127,9 @@ class PipelineSmokeTests(unittest.TestCase):
             self.assertNotIn("student@example.edu", row.text)
             self.assertIsNotNone(row.duplicate_method)
             self.assertIsNotNone(row.manual_review_at)
+            llm_audit = AuditLog.query.filter_by(grievance_id=row.id, action="llm_analysis").one()
+            self.assertIn("provider=", llm_audit.detail)
+            self.assertIn("model=", llm_audit.detail)
         self.assertEqual(self.client.get("/api/v1/grievances/" + ack).status_code, 200)
         self.assertEqual(self.client.get(payload["track_url"]).status_code, 200)
 
@@ -126,12 +139,14 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200, second.get_json())
         self.assertEqual(second.get_json()["duplicate_of"], 1)
         self.assertEqual(second.get_json()["related_matches"][0]["relationship"], "exact_duplicate")
+        related_cases = self.client.get("/?related=yes")
+        self.assertEqual(related_cases.status_code, 200)
+        self.assertIn(ack.encode(), related_cases.data)
 
-        headers = {"X-ADMIN-TOKEN": "test-admin-token"}
-        queue = self.client.get("/api/v1/review-queue", headers=headers)
+        queue = self.client.get("/api/v1/review-queue")
         self.assertEqual(queue.status_code, 200)
         self.assertEqual(queue.get_json()["items"][0]["ack_number"], ack)
-        bypass = self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "in_progress"}, headers=headers)
+        bypass = self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "in_progress"})
         self.assertEqual(bypass.status_code, 409)
 
         accepted = self.client.post("/api/v1/grievances/" + ack + "/classification", json={
@@ -139,7 +154,7 @@ class PipelineSmokeTests(unittest.TestCase):
             "subcategory": payload["predicted_subcategory"],
             "priority": payload["predicted_priority"],
             "actor": "smoke-test",
-        }, headers=headers)
+        })
         self.assertEqual(accepted.status_code, 200, accepted.get_json())
         with self.app.app_context():
             row = Grievance.query.filter_by(ack_number=ack).one()
@@ -149,9 +164,9 @@ class PipelineSmokeTests(unittest.TestCase):
 
         route = self.client.post("/api/v1/grievances/" + ack + "/override", json={
             "department": "IT Services / Library", "actor": "smoke-test", "note": "reviewed"
-        }, headers=headers)
+        })
         self.assertEqual(route.status_code, 200, route.get_json())
-        status = self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "in_progress"}, headers=headers)
+        status = self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "in_progress"})
         self.assertEqual(status.status_code, 200)
         with self.app.app_context():
             row = Grievance.query.filter_by(ack_number=ack).one()
@@ -161,18 +176,18 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(self.client.get("/admin/audit/" + ack).status_code, 200)
         labels = self.client.post("/api/v1/grievances/" + ack + "/classification", json={
             "category": "Canteen", "subcategory": "food_hygiene", "priority": 4, "actor": "smoke-test"
-        }, headers=headers)
+        })
         self.assertEqual(labels.status_code, 200, labels.get_json())
         self.assertEqual(labels.get_json()["routed_department"], "Canteen Management")
         bad_labels = self.client.post("/api/v1/grievances/" + ack + "/classification", json={
             "category": "Canteen", "subcategory": "wifi_network", "priority": 4
-        }, headers=headers)
+        })
         self.assertEqual(bad_labels.status_code, 400)
         summary_review = self.client.post("/api/v1/grievances/" + ack + "/summary-review", json={
             "factuality": "partially_factual", "note": "reviewed; contact alice@example.edu", "actor": "admin@example.edu"
-        }, headers=headers)
+        })
         self.assertEqual(summary_review.status_code, 200)
-        explanation = self.client.get("/api/v1/grievances/" + ack + "/explanation", headers=headers)
+        explanation = self.client.get("/api/v1/grievances/" + ack + "/explanation")
         self.assertTrue(explanation.get_json()["available"])
         self.assertTrue(explanation.get_json()["features"])
         with self.app.app_context():
@@ -199,11 +214,11 @@ class PipelineSmokeTests(unittest.TestCase):
             self.assertNotIn("alice@example.edu", event.detail)
             self.assertNotIn("alice@example.edu", row.summary_review_note)
             self.assertNotIn("admin@example.edu", row.summary_reviewed_by)
-        self.assertEqual(self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "submitted"}, headers=headers).status_code, 409)
-        metrics = self.client.get("/api/v1/admin/metrics", headers=headers).get_json()
+        self.assertEqual(self.client.post("/api/v1/grievances/" + ack + "/status", json={"status": "submitted"}).status_code, 409)
+        metrics = self.client.get("/api/v1/admin/metrics").get_json()
         self.assertIsNone(metrics["routing_accuracy"])
         self.assertEqual(self.app.test_client().get("/api/v1/admin/analytics").status_code, 401)
-        analytics = self.client.get("/api/v1/admin/analytics", headers=headers)
+        analytics = self.client.get("/api/v1/admin/analytics")
         self.assertEqual(analytics.status_code, 200)
         self.assertEqual(analytics.get_json()["source"], "local synthetic/demo submissions; workflow counts are not model evaluation metrics")
         self.assertGreaterEqual(analytics.get_json()["duplicate_count"], 1)
@@ -215,11 +230,48 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertTrue(corpus["available"])
         self.assertGreater(corpus["total_grievances"], 0)
         self.assertIn("no timestamp column", corpus["daily_trends_note"])
-        with self.client.session_transaction() as browser_session:
-            browser_session["admin_authenticated"] = True
         dashboard = self.client.get("/")
         self.assertEqual(dashboard.status_code, 200)
         self.assertIn(b"Synthetic training corpus", dashboard.data)
+
+    def test_admin_case_review_detail_filters_and_logout(self):
+        ack_path = "/admin/grievances/GRV-00000000-NOT-FOUND"
+        self.assertIn(self.client.get(ack_path).status_code, (302, 303))
+        self.assertEqual(self.client.post("/admin/login", data={"username": "test-admin-user", "password": "wrong-password"}).status_code, 401)
+        self.assertEqual(self.client.post("/admin/login", data={"username": "missing-user", "password": "test-admin-password"}).status_code, 401)
+        self.assertEqual(self.client.post("/admin/login", data={"username": "", "password": ""}).status_code, 400)
+        self.assertEqual(self.client.post("/admin/login", data={"username": "test-admin-user", "password": "test-admin-password"}).status_code, 302)
+        response = self.client.post("/api/v1/grievances", json={"text": "Library WiFi unavailable; please check the access point."})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        ack = response.get_json()["ack_number"]
+        detail = self.client.get(f"/admin/grievances/{ack}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn(b"Model prediction", detail.data)
+        self.assertIn(b"Why did GrieveAI classify this grievance", detail.data)
+        dashboard = self.client.get("/?q=" + ack + "&sort=priority")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn(ack.encode(), dashboard.data)
+        filtered = self.client.get(f"/?category={response.get_json()['category']}&subcategory={response.get_json()['subcategory']}&sort=oldest")
+        self.assertEqual(filtered.status_code, 200)
+        self.assertIn(ack.encode(), filtered.data)
+        correction = self.client.post(f"/api/v1/grievances/{ack}/classification", json={
+            "category": "IT_Library", "subcategory": "wifi_network", "priority": 4,
+            "actor": "reviewer", "note": "Confirmed after staff review",
+        })
+        self.assertEqual(correction.status_code, 200, correction.get_json())
+        with self.app.app_context():
+            row = Grievance.query.filter_by(ack_number=ack).one()
+            audit = AuditLog.query.filter_by(grievance_id=row.id, action="classification_override").one()
+            self.assertIn("Confirmed after staff review", audit.detail)
+            self.assertEqual(row.predicted_category, response.get_json()["predicted_category"])
+        reviewed = self.client.get("/?review=reviewed")
+        self.assertEqual(reviewed.status_code, 200)
+        self.assertIn(ack.encode(), reviewed.data)
+        logout = self.client.post("/admin/logout")
+        self.assertEqual(logout.status_code, 302)
+        self.assertIn(self.client.get("/").status_code, (302, 303))
+        self.assertEqual(self.client.get("/api/v1/review-queue").status_code, 401)
+        self.assertIn(self.client.get(f"/admin/grievances/{ack}").status_code, (302, 303))
 
     def test_seven_categories_languages_and_sla(self):
         examples = [
@@ -283,13 +335,11 @@ class PipelineSmokeTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/v1/grievances", json={"text": "  "}).status_code, 400)
         self.assertEqual(self.client.post("/api/v1/grievances", json={"text": "x" * 2001}).status_code, 400)
 
-    def test_admin_disabled_without_configured_token(self):
-        os.environ.pop("ADMIN_TOKEN", None)
-        try:
-            self.assertEqual(self.client.get("/api/v1/review-queue").status_code, 503)
-            self.assertEqual(self.client.post("/admin/login", data={"token": "anything"}).status_code, 503)
-        finally:
-            os.environ["ADMIN_TOKEN"] = "test-admin-token"
+    def test_admin_disabled_without_configured_credentials(self):
+        self.app.config["ADMIN_USERNAME"] = None
+        self.app.config["ADMIN_PASSWORD_HASH"] = None
+        self.assertEqual(self.client.get("/api/v1/review-queue").status_code, 503)
+        self.assertEqual(self.client.post("/admin/login", data={"username": "admin", "password": "anything"}).status_code, 503)
 
     def test_summary_fallback_and_configured_route_without_credentials(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "", "OPENROUTER_API_KEY": ""}, clear=False):

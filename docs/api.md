@@ -1,6 +1,6 @@
 # REST API
 
-All request bodies are JSON unless noted. Grievance text is limited to 2,000 characters. Admin routes require `X-ADMIN-TOKEN` matching the configured `ADMIN_TOKEN`; admin operations return 503 when no token is configured and 401 for an invalid token.
+All request bodies are JSON unless noted. Grievance text is limited to 2,000 characters. Admin routes require an authenticated Flask session created by signing in with the locally configured `ADMIN_USERNAME` and `ADMIN_PASSWORD`. Admin operations return 503 when credentials are not configured and 401 when the session is missing.
 
 | Method | Path | Purpose |
 |---|---|---|

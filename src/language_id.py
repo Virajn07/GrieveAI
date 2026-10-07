@@ -28,6 +28,13 @@ LABELED_ID_PATTERN = re.compile(
 PHONE_PATTERN = re.compile(r"(?<!\d)(?:(?:\+?91)[- ]?)?[6-9]\d{4}[- ]?\d{5}(?!\d)")
 AADHAAR_PATTERN = re.compile(r"(?<!\d)\d{4}[- ]?\d{4}[- ]?\d{4}(?!\d)")
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+LABELED_NAME_PATTERN = re.compile(
+    r"\b(?P<label>my\s+name\s+is|mera\s+naam)\s+"
+    r"(?P<name>[\w'’.-]+(?:\s+[\w'’.-]+){0,3})"
+    r"(?=\s*(?:[,;!?]|\.|$|\b(?:hai|hain|and|but|my|phone|email|student|roll|"
+    r"hostel|wifi|wi-fi|contact|number)\b))",
+    re.IGNORECASE,
+)
 
 # Conservative markers: words that are disproportionately common in
 # Romanised Hindi. They are used only as a fallback/augmentation signal.
@@ -136,9 +143,11 @@ def _compiled_name_patterns():
 def redact_pii(text: str) -> str:
     """Redact direct identifiers before DB storage or external API calls.
 
-    Name redaction is enabled only when an institution supplies an explicit name-list
-    file; the system does not attempt to guess names from arbitrary text.
+    Names are redacted when introduced by an explicit English/Hinglish name label,
+    or when an institution supplies an explicit name-list file. The system does not
+    attempt to guess names from arbitrary text.
     """
+    text = LABELED_NAME_PATTERN.sub(lambda match: f"{match.group('label')} [NAME]", text)
     text = LABELED_ID_PATTERN.sub("[ID]", text)
     text = AADHAAR_PATTERN.sub("[ID_NUMBER]", text)
     text = EMAIL_PATTERN.sub("[EMAIL]", text)

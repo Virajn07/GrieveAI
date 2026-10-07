@@ -43,13 +43,17 @@ class IndicBERTEndToEndTests(unittest.TestCase):
             "INDICBERT_CHECKPOINT_DIR": str(checkpoint),
             "TAXONOMY_CONFIG": "config/taxonomy.json",
             "DATABASE_URL": database_url,
-            "ADMIN_TOKEN": "integration-admin-token",
+            "ADMIN_USERNAME": "integration-admin",
+            "ADMIN_PASSWORD": "integration-admin-password",
             "ML_CONFIDENCE_THRESHOLD": "0.70",
             "OPENROUTER_API_KEY": "",
             "OPENROUTER_MODEL": "",
             "HF_HUB_OFFLINE": "1",
             "DISABLE_SEMANTIC_DEDUP": "1",
         }
+        ollama_patch = patch("src.llm_report._request_ollama", side_effect=ConnectionError("offline integration test"))
+        ollama_patch.start()
+        self.addCleanup(ollama_patch.stop)
         reset_classifier_cache()
         with patch.dict(os.environ, env):
             app = create_app({"TESTING": True, "SQLALCHEMY_DATABASE_URI": database_url})
@@ -64,6 +68,8 @@ class IndicBERTEndToEndTests(unittest.TestCase):
                     connection.close()
 
             client = app.test_client()
+            login = client.post("/admin/login", data={"username": "integration-admin", "password": "integration-admin-password"})
+            self.assertEqual(login.status_code, 302)
             readiness = client.get("/api/v1/health")
             self.assertEqual(readiness.status_code, 200, readiness.get_json())
             self.assertTrue(readiness.get_json()["model"]["version"].startswith("indicbert_lora_run1+base-"))
@@ -92,7 +98,6 @@ class IndicBERTEndToEndTests(unittest.TestCase):
             self.assertEqual(tracked.get_json()["model_version"], created[0]["model_version"])
             explanation = client.get(
                 f"/api/v1/grievances/{created[0]['ack_number']}/explanation",
-                headers={"X-ADMIN-TOKEN": "integration-admin-token"},
             )
             self.assertEqual(explanation.status_code, 200, explanation.get_json())
             self.assertTrue(explanation.get_json()["available"])
@@ -130,7 +135,6 @@ class IndicBERTEndToEndTests(unittest.TestCase):
                     "priority": 3,
                     "actor": "reviewer",
                 },
-                headers={"X-ADMIN-TOKEN": "integration-admin-token"},
             )
             self.assertEqual(correction.status_code, 200, correction.get_json())
 
@@ -145,8 +149,8 @@ class IndicBERTEndToEndTests(unittest.TestCase):
                 self.assertEqual(persisted.category, correction_category)
                 self.assertTrue(AuditLog.query.filter_by(grievance_id=persisted.id, action="classification_override").count())
             with app2.test_client() as client2:
-                with client2.session_transaction() as session:
-                    session["admin_authenticated"] = True
+                login2 = client2.post("/admin/login", data={"username": "integration-admin", "password": "integration-admin-password"})
+                self.assertEqual(login2.status_code, 302)
                 dashboard = client2.get("/")
                 self.assertEqual(dashboard.status_code, 200)
                 self.assertIn(b"indicbert_lora_run1+base-", dashboard.data)

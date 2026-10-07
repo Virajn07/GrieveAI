@@ -171,7 +171,8 @@ def submit_grievance(raw_text: str):
         model_department=llm_result["llm_department_recommendation"],
         llm_analysis={key: llm_result[key] for key in (
             "summary", "root_cause", "recommended_action", "department", "department_recommendation",
-            "urgency_reason", "recurring_issue", "recurring_interpretation", "provider", "used_fallback",
+            "urgency_reason", "recurring_issue", "recurring_interpretation", "provider", "provider_label",
+            "model_name", "fallback_label", "used_fallback",
         )},
         submitted_at=now,
         prediction_at=now,
@@ -200,6 +201,13 @@ def submit_grievance(raw_text: str):
                 synchronize_session=False,
             )
     _audit(grievance.id, "submitted", "system", f"category={prediction['category']}; confidence={prediction['confidence']}; language={language}")
+    llm_model = llm_result.get("model_name") or "none"
+    _audit(
+        grievance.id,
+        "llm_analysis",
+        "system",
+        f"provider={llm_result['provider']}; model={llm_model}; used_fallback={bool(llm_result['used_fallback'])}",
+    )
     if manual_review:
         reason = "confidence_below_threshold" if inference["requires_human_review"] else "department_mapping_unavailable"
         _audit(grievance.id, "manual_review_queued", "system", f"reason={reason}; threshold={threshold}")

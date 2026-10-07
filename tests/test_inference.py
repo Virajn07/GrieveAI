@@ -44,6 +44,18 @@ class InferenceApiTests(unittest.TestCase):
             self.assertNotIn(identifier, redacted)
         self.assertIn("roll call", redact_pii("The roll call begins at 10."))
 
+    def test_redacts_explicit_english_and_hinglish_names(self):
+        english = redact_pii(
+            "My name is Rahul Sharma, my phone number is 9876543210 and WiFi keeps disconnecting."
+        )
+        hinglish = redact_pii(
+            "Mera naam Test Student hai, student ID 24CS999 hai aur hostel WiFi disconnect hota hai."
+        )
+        for identifier in ("Rahul Sharma", "9876543210", "Test Student", "24CS999"):
+            self.assertNotIn(identifier, english + " " + hinglish)
+        self.assertIn("[NAME]", english)
+        self.assertIn("[NAME]", hinglish)
+
     def test_confidence_threshold_is_configurable_by_environment(self):
         with patch.dict("os.environ", {"ML_CONFIDENCE_THRESHOLD": "0.72", "CONFIDENCE_THRESHOLD": "0.8"}):
             self.assertEqual(load_threshold_settings()["confidence_threshold"], 0.72)

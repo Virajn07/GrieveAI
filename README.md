@@ -21,8 +21,7 @@ Use Python 3.10 or newer. From the repository root, create and activate a
 virtual environment, then install `requirements-local.txt`. Place the provided
 IndicBERT Run 1 archive at the path described above and extract it into the
 repository root so its files land under `checkpoints/indicbert_lora/run1/`.
-Copy `.env.example` to `.env`, set a private `ADMIN_TOKEN` and `SECRET_KEY`, and
-keep `MODEL_BACKEND=indicbert`. The first inference downloads the public base
+Copy `.env.example` to `.env`, set a local `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and stable `SECRET_KEY`, and keep `MODEL_BACKEND=indicbert`. The first inference downloads the public base
 model if it is not already cached; GPU is used when available, otherwise CPU.
 
 Start the local app with `python -m app.app`. Check model and database readiness
@@ -33,8 +32,64 @@ python -c "from src.inference import predict_grievance; print(predict_grievance(
 ```
 
 Run the test suite with `python -m unittest discover -s tests -v`. Tests do not
-require an API key; OpenRouter behavior is mocked. Set `MODEL_BACKEND=baseline`
-only to explicitly select TF-IDF for development or comparison.
+require Ollama or an API key; LLM provider behavior is mocked. Local Ollama
+(`OLLAMA_BASE_URL=http://127.0.0.1:11434`, `OLLAMA_MODEL=qwen3:8b`) is the
+primary structured-analysis provider. If it is unavailable, configured
+OpenRouter models are tried before deterministic fallback. Set
+`MODEL_BACKEND=baseline` only to explicitly select TF-IDF for development or
+comparison.
+
+## Environment variables
+
+Create an untracked local `.env` from `.env.example` and configure:
+
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<your-local-password>
+SECRET_KEY=<a-long-random-session-secret>
+MODEL_BACKEND=indicbert
+```
+
+The application hashes `ADMIN_PASSWORD` with Werkzeug when it starts; the
+plaintext is not saved in the database or stored in the Flask configuration.
+Without both administrator variables, protected admin functions fail closed
+and the sign-in page displays a setup message. Do not commit `.env` or real
+credentials. The local admin session survives refresh and can be ended with
+Sign out. The configured confidence threshold is read from the existing
+threshold configuration.
+
+### Local administrator access
+
+Sign in with the configured username and password at `/admin/login`. The
+application uses Flask sessions for protected dashboard, review and audit
+routes. There is no built-in demo password and no token-based admin login.
+The student submission page is `/submit`; administrators sign in at
+`/admin/login`. The dashboard and individual case review pages use the
+existing database records and audit log. If there are no records, the inbox
+shows an empty state. The checked-in training corpus is synthetic and is not
+counted as live campus grievances or VCET activity.
+
+### Local synthetic demo data
+
+To populate the local database with a repeatable set of 297 clearly synthetic
+demo grievances (nine per taxonomy subcategory), run:
+
+```powershell
+python -m app.seed_demo
+```
+
+The command is safe to rerun: if its `DEMO-*` records already exist, it leaves
+the database unchanged. To replace only those seeded records, run:
+
+```powershell
+python -m app.seed_demo --reset
+```
+
+Reset deletes only grievance rows whose acknowledgement starts with `DEMO-`
+and their audit entries. Other local submissions are preserved. The seeded
+text comes from the checked-in synthetic training corpus; records are marked
+as synthetic in their acknowledgement, model version, analysis and audit
+history. They are for local UI demonstration only.
 
 ## Project Objective
 

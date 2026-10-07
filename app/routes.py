@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
@@ -11,6 +13,9 @@ import os
 import pandas as pd
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash
+from urllib.parse import urljoin, urlsplit
+from datetime import datetime, time, timedelta
 
 from app.models_db import AuditLog, Grievance, as_utc, db, utc_now
 from app.services import _audit, get_classifier, get_embedder, get_similarity_vectorizer, submit_grievance as submit_grievance_service
@@ -18,6 +23,7 @@ from src.language_id import redact_pii
 from src.priority_dedup import cluster_recurring_grievances
 
 bp = Blueprint("main", __name__)
+_shap_lock = threading.Lock()
 
 STATUS_VALUES = {"submitted", "routed", "in_progress", "resolved", "rejected", "duplicate", "closed"}
 STATUS_TRANSITIONS = {
@@ -38,31 +44,68 @@ def sla_status(grievance, at=None) -> str:
     return "overdue" if at > deadline else "on_track"
 
 
+def _admin_configured():
+    return bool(current_app.config.get("ADMIN_USERNAME") and current_app.config.get("ADMIN_PASSWORD_HASH"))
+
+
+def _admin_authenticated():
+    return (
+        _admin_configured()
+        and session.get("admin_authenticated") is True
+        and session.get("admin_username") == current_app.config.get("ADMIN_USERNAME")
+    )
+
+
 def _require_admin():
-    expected = os.getenv("ADMIN_TOKEN", "").strip()
-    if not expected:
-        return jsonify({"error": "admin actions are disabled; configure ADMIN_TOKEN"}), 503
-    supplied = request.headers.get("X-ADMIN-TOKEN", "")
-    import hmac
-    if session.get("admin_authenticated") is not True and not hmac.compare_digest(supplied, expected):
+    if not _admin_configured():
+        return jsonify({"error": "admin actions are disabled; configure ADMIN_USERNAME and ADMIN_PASSWORD"}), 503
+    if not _admin_authenticated():
         return jsonify({"error": "admin authentication required"}), 401
+    return None
+
+
+def _safe_next(target):
+    if not target:
+        return None
+    candidate = urlsplit(urljoin(request.host_url, target))
+    base = urlsplit(request.host_url)
+    if candidate.scheme in {"http", "https"} and candidate.netloc == base.netloc:
+        return target
     return None
 
 
 @bp.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
+    configured = _admin_configured()
     if request.method == "GET":
-        return render_template("admin_login.html", configured=bool(os.getenv("ADMIN_TOKEN", "").strip()))
-    expected = os.getenv("ADMIN_TOKEN", "").strip()
-    supplied = (request.form.get("token") or "").strip()
-    import hmac
-    if not expected:
-        return render_template("admin_login.html", configured=False, error="Admin actions are disabled until ADMIN_TOKEN is configured."), 503
-    if not hmac.compare_digest(supplied, expected):
-        return render_template("admin_login.html", configured=True, error="Invalid admin token."), 401
+        return render_template("admin_login.html", configured=configured)
+    if not configured:
+        return render_template(
+            "admin_login.html", configured=False,
+            error="Admin sign-in is unavailable. Configure ADMIN_USERNAME and ADMIN_PASSWORD locally.",
+        ), 503
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    if not username or not password:
+        return render_template(
+            "admin_login.html", configured=True,
+            error="Enter both username and password.",
+        ), 400
+    valid = username == current_app.config["ADMIN_USERNAME"]
+    try:
+        password_valid = check_password_hash(current_app.config["ADMIN_PASSWORD_HASH"], password)
+    except (TypeError, ValueError):
+        password_valid = False
+    if not (valid and password_valid):
+        return render_template(
+            "admin_login.html", configured=True,
+            error="Invalid username or password.",
+        ), 401
+    target = _safe_next(request.args.get("next"))
+    session.clear()
     session["admin_authenticated"] = True
-    return redirect(url_for("main.index"))
-
+    session["admin_username"] = current_app.config["ADMIN_USERNAME"]
+    return redirect(target or url_for("main.index"))
 
 @bp.route("/admin/logout", methods=["POST"])
 def admin_logout():
@@ -72,23 +115,92 @@ def admin_logout():
 
 @bp.route("/")
 def index():
-    if session.get("admin_authenticated") is not True:
+    if not _admin_authenticated():
         return redirect(url_for("main.admin_login"))
     query = Grievance.query
     department = request.args.get("department", "").strip()
     status = request.args.get("status", "").strip()
+    category = request.args.get("category", "").strip()
+    subcategory = request.args.get("subcategory", "").strip()
+    priority = request.args.get("priority", "").strip()
+    review = request.args.get("review", "").strip()
+    related = request.args.get("related", "").strip()
+    duplicate = request.args.get("duplicate", "").strip()
+    recurring = request.args.get("recurring", "").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
+    search = request.args.get("q", "").strip()[:80]
+    sort = request.args.get("sort", "newest").strip()
+    page = request.args.get("page", 1, type=int)
     if department:
         query = query.filter_by(routed_department=department)
+    if category:
+        query = query.filter_by(category=category)
+    if subcategory:
+        query = query.filter_by(subcategory=subcategory)
+    if priority in {"1", "2", "3", "4", "5"}:
+        query = query.filter_by(priority=int(priority))
+    if review == "needed":
+        query = query.filter_by(manual_review=True)
+    elif review == "reviewed":
+        reviewed = db.session.query(AuditLog.grievance_id).filter(
+            AuditLog.action.in_(["classification_accepted", "classification_override"])
+        )
+        query = query.filter(Grievance.id.in_(reviewed))
     if status == "review":
         query = query.filter_by(manual_review=True, status="submitted")
     elif status:
         query = query.filter_by(status=status)
-    grievances = query.order_by(Grievance.submitted_at.desc()).limit(100).all()
+    if related == "yes":
+        query = query.filter(db.or_(Grievance.duplicate_of_id.isnot(None), Grievance.recurring_cluster_id.isnot(None)))
+    elif related == "no":
+        query = query.filter(Grievance.duplicate_of_id.is_(None), Grievance.recurring_cluster_id.is_(None))
+    if duplicate == "yes":
+        query = query.filter(Grievance.duplicate_of_id.isnot(None))
+    elif duplicate == "no":
+        query = query.filter(Grievance.duplicate_of_id.is_(None))
+    if recurring == "yes":
+        query = query.filter(Grievance.recurring_cluster_id.isnot(None))
+    elif recurring == "no":
+        query = query.filter(Grievance.recurring_cluster_id.is_(None))
+    if date_from:
+        try:
+            query = query.filter(Grievance.submitted_at >= datetime.combine(datetime.strptime(date_from, "%Y-%m-%d").date(), time.min))
+        except ValueError:
+            date_from = ""
+    if date_to:
+        try:
+            query = query.filter(Grievance.submitted_at < datetime.combine(datetime.strptime(date_to, "%Y-%m-%d").date() + timedelta(days=1), time.min))
+        except ValueError:
+            date_to = ""
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(db.or_(Grievance.ack_number.ilike(pattern), Grievance.text.ilike(pattern)))
+    if sort == "oldest":
+        query = query.order_by(Grievance.submitted_at.asc())
+    elif sort == "priority":
+        query = query.order_by(Grievance.priority.desc(), Grievance.submitted_at.desc())
+    elif sort == "confidence":
+        query = query.order_by(Grievance.confidence.asc(), Grievance.submitted_at.desc())
+    else:
+        sort = "newest"
+        query = query.order_by(Grievance.submitted_at.desc())
+    pagination = query.paginate(page=max(1, page), per_page=25, error_out=False)
+    grievances = pagination.items
+    reviewed_ids = {
+        row[0] for row in db.session.query(AuditLog.grievance_id).filter(
+            AuditLog.grievance_id.in_([g.id for g in grievances] or [-1]),
+            AuditLog.action.in_(["classification_accepted", "classification_override"]),
+        ).distinct().all()
+    }
     counts = {
         "total": Grievance.query.count(),
-        "review": Grievance.query.filter_by(manual_review=True, status="submitted").count(),
+        "pending": Grievance.query.filter_by(status="submitted").count(),
+        "review": Grievance.query.filter_by(manual_review=True).count(),
+        "under_review": Grievance.query.filter_by(status="in_progress").count(),
         "open": Grievance.query.filter(Grievance.status.in_(["submitted", "routed", "in_progress"])).count(),
         "resolved": Grievance.query.filter_by(status="resolved").count(),
+        "high_priority": Grievance.query.filter(Grievance.priority >= 4).count(),
         "overrides": AuditLog.query.filter_by(action="override").count(),
     }
     try:
@@ -96,16 +208,54 @@ def index():
     except (OSError, ValueError):
         departments = {}
     analytics = _build_analytics()
-    return render_template("dashboard.html", grievances=grievances, counts=counts, analytics=analytics, departments=sorted(set(departments.values())), selected_department=department, selected_status=status, now=utc_now())
+    taxonomy = _load_taxonomy()
+    return render_template(
+        "dashboard.html", grievances=grievances, counts=counts, analytics=analytics,
+        departments=sorted(set(departments.values())), categories=sorted(taxonomy),
+        selected_department=department, selected_status=status, selected_category=category,
+        selected_subcategory=subcategory, selected_priority=priority, selected_review=review,
+        selected_related=related, selected_duplicate=duplicate, selected_recurring=recurring,
+        date_from=date_from, date_to=date_to, search=search, sort=sort,
+        subcategories=_load_taxonomy(), pagination=pagination, reviewed_ids=reviewed_ids,
+        admin_name=current_app.config.get("ADMIN_USERNAME") or "Grievance Admin", now=utc_now(),
+    )
 
 
-def _build_analytics():
+def _load_taxonomy():
+    path = Path(os.getenv("TAXONOMY_CONFIG", "config/taxonomy.json"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("categories", {})
+    except (OSError, ValueError):
+        return {}
+
+
+@bp.route("/admin/grievances/<ack_number>")
+def grievance_detail(ack_number):
+    if not _admin_authenticated():
+        return redirect(url_for("main.admin_login", next=request.path))
+    grievance = Grievance.query.filter_by(ack_number=ack_number).first_or_404()
+    entries = AuditLog.query.filter_by(grievance_id=grievance.id).order_by(AuditLog.timestamp.asc()).all()
+    try:
+        mapping = json.loads(Path(os.getenv("DEPARTMENTS_CONFIG", "config/departments.json")).read_text(encoding="utf-8")).get("mapping", {})
+    except (OSError, ValueError):
+        mapping = {}
+    taxonomy = _load_taxonomy()
+    latest_review = next((entry for entry in reversed(entries) if entry.action in {"classification_accepted", "classification_override"}), None)
+    return render_template(
+        "grievance_detail.html", grievance=grievance, entries=entries,
+        latest_review=latest_review, taxonomy=taxonomy, departments=sorted(set(mapping.values())),
+        sla_status=sla_status(grievance), admin_name=current_app.config.get("ADMIN_USERNAME") or "Grievance Admin",
+    )
+
+
+def _build_analytics(*, include_synthetic_dataset=False):
     rows = Grievance.query.order_by(Grievance.submitted_at.desc()).all()
     categories = Counter(row.category for row in rows)
     subcategories = Counter(row.subcategory for row in rows)
     priorities = Counter(str(row.priority) for row in rows)
     departments = Counter(row.routed_department for row in rows if row.routed_department)
     statuses = Counter(row.status for row in rows)
+    languages = Counter(row.language for row in rows)
     trends = Counter(as_utc(row.submitted_at).date().isoformat() for row in rows if row.submitted_at)
     classifier = get_classifier() if rows else None
     recurrence_rows = [
@@ -118,6 +268,17 @@ def _build_analytics():
         embedder=get_embedder(),
     ) if recurrence_rows else []
     stored_clusters = Counter(row.recurring_cluster_id for row in rows if row.recurring_cluster_id)
+    recurring_group_summary = []
+    for cluster_id, count in stored_clusters.most_common():
+        members = [row for row in rows if row.recurring_cluster_id == cluster_id]
+        representative = members[0]
+        recurring_group_summary.append({
+            "cluster_id": cluster_id,
+            "count": count,
+            "category": representative.category,
+            "subcategory": representative.subcategory,
+            "latest_at": max((as_utc(row.submitted_at) for row in members), default=None),
+        })
     return {
         "source": "local synthetic/demo submissions; workflow counts are not model evaluation metrics",
         "total_grievances": len(rows),
@@ -137,11 +298,13 @@ def _build_analytics():
         "recurring_clusters": clusters,
         "stored_recurring_group_count": len(stored_clusters),
         "recurring_issue_count": len(stored_clusters),
+        "recurring_group_summary": recurring_group_summary,
         "department_workload": dict(sorted(departments.items())),
         "status_distribution": dict(sorted(statuses.items())),
+        "language_distribution": dict(sorted(languages.items())),
         "model_version_distribution": dict(sorted(Counter(row.model_version or "unknown" for row in rows).items())),
         "daily_submissions": dict(sorted(trends.items())),
-        "synthetic_training_dataset": _synthetic_dataset_analytics(),
+        "synthetic_training_dataset": _synthetic_dataset_analytics() if include_synthetic_dataset else {"available": False},
     }
 
 
@@ -232,6 +395,13 @@ def submit_grievance():
         return jsonify({"error": "request body must be an object"}), 400
     payload, error = _submission_payload(data.get("text"))
     if error:
+        if not request.is_json:
+            response, status_code = error
+            raw_text = data.get("text")
+            return render_template(
+                "submit.html", error=(response.get_json() or {}).get("error", "Submission failed."),
+                submitted_text=raw_text[:2000] if isinstance(raw_text, str) else "",
+            ), status_code
         return error
     if request.is_json:
         return jsonify(payload)
@@ -288,7 +458,8 @@ def _submission_payload(raw_value):
 @bp.route("/track/<ack_number>")
 def track(ack_number):
     grievance = Grievance.query.filter_by(ack_number=ack_number).first_or_404()
-    return render_template("track.html", grievance=grievance, sla_status=sla_status(grievance))
+    last_updated = db.session.query(db.func.max(AuditLog.timestamp)).filter_by(grievance_id=grievance.id).scalar() or grievance.submitted_at
+    return render_template("track.html", grievance=grievance, sla_status=sla_status(grievance), last_updated=last_updated)
 
 
 @bp.route("/api/grievances/<ack_number>")
@@ -403,6 +574,9 @@ def override_classification(ack_number):
     actor_value = data.get("actor", "admin")
     if not isinstance(actor_value, str):
         return jsonify({"error": "actor must be a string"}), 400
+    note_value = data.get("note", "")
+    if not isinstance(note_value, str):
+        return jsonify({"error": "note must be a string"}), 400
     try:
         taxonomy_path = os.getenv("TAXONOMY_CONFIG", "config/taxonomy.json")
         taxonomy = json.loads(Path(taxonomy_path).read_text(encoding="utf-8"))["categories"]
@@ -450,6 +624,8 @@ def override_classification(ack_number):
         if classification_changed
         else f"accepted {category}/{subcategory}/P{priority}"
     )
+    if note_value.strip():
+        detail = f"{detail}; reviewer note: {note_value.strip()}"
     _audit(grievance.id, action, actor, detail)
     if old_department != new_department:
         _audit(grievance.id, "routing_after_classification_override", actor, f"{old_department} -> {new_department}")
@@ -493,11 +669,32 @@ def grievance_explanation(ack_number):
     grievance = Grievance.query.filter_by(ack_number=ack_number).first_or_404()
     if grievance.explanation is not None:
         return jsonify({"available": True, "features": grievance.explanation})
+    classifier = get_classifier()
+    if not _shap_lock.acquire(blocking=False):
+        return jsonify({"available": False, "features": [], "error": "A SHAP explanation is already running. Please retry shortly."}), 503
+    result_queue = queue.Queue(maxsize=1)
+
+    def calculate_explanation():
+        try:
+            result_queue.put((True, classifier.explain(grievance.text)))
+        except Exception as exc:
+            result_queue.put((False, exc))
+        finally:
+            _shap_lock.release()
+
+    worker = threading.Thread(target=calculate_explanation, name="grieveai-shap", daemon=True)
+    worker.start()
     try:
-        explanation = get_classifier().explain(grievance.text)
+        succeeded, result = result_queue.get(timeout=current_app.config["SHAP_TIMEOUT_SECONDS"])
+        if not succeeded:
+            raise result
+        explanation = result
+    except queue.Empty:
+        current_app.logger.warning("SHAP explanation timed out for grievance id=%s", grievance.id)
+        return jsonify({"available": False, "features": [], "error": "SHAP explanation timed out. Retry to try again."}), 504
     except Exception:
         current_app.logger.exception("On-demand explanation failed for grievance id=%s", grievance.id)
-        return jsonify({"available": False, "features": []})
+        return jsonify({"available": False, "features": [], "error": "SHAP explanation failed. Retry to try again."}), 500
     grievance.explanation = explanation
     db.session.commit()
     return jsonify({"available": True, "features": explanation})
@@ -573,12 +770,12 @@ def admin_analytics():
     denied = _require_admin()
     if denied:
         return denied
-    return jsonify(_build_analytics())
+    return jsonify(_build_analytics(include_synthetic_dataset=True))
 
 
 @bp.route("/admin/audit/<ack_number>")
 def audit_trail(ack_number):
-    if session.get("admin_authenticated") is not True:
+    if not _admin_authenticated():
         return redirect(url_for("main.admin_login"))
     grievance = Grievance.query.filter_by(ack_number=ack_number).first_or_404()
     entries = AuditLog.query.filter_by(grievance_id=grievance.id).order_by(AuditLog.timestamp.asc()).all()
